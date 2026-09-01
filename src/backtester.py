@@ -196,6 +196,37 @@ def backtest_pois(
     return trades
 
 
+def backtest_po3_setups(
+    df: pd.DataFrame,
+    setups: list,
+    reward_r: float = 2.0,
+    max_bars: int = 20,
+) -> list[Trade]:
+    """
+    One trade per PO3 setup (session_model.find_po3_setups()) -- entry/
+    stop/direction are already fully specified on the setup itself
+    (the manipulation candle's own wick is the stop, same "don't invent
+    a new risk model" rule as everywhere else in this module), so this
+    is a thin adapter into the same _simulate_trade() core.
+    """
+    trades = []
+    for s in setups:
+        risk = (
+            (s.entry_price - s.stop_price) if s.distribution_direction == "bullish"
+            else (s.stop_price - s.entry_price)
+        )
+        if risk <= 0:
+            continue  # invalidated at entry -- the entry candle already closed through the stop
+
+        target_price = _target_from_risk(s.entry_price, risk, s.distribution_direction, reward_r)
+        trades.append(_simulate_trade(
+            df, s.entry_index, s.entry_price, s.stop_price, target_price,
+            s.distribution_direction, max_bars, "PO3", reward_r,
+        ))
+
+    return trades
+
+
 def summarize_trades(trades: list[Trade]) -> dict[str, BacktestStats]:
     """Groups trades by source_type and computes win rate / expectancy for each."""
     by_type: dict[str, list[Trade]] = {}
@@ -258,10 +289,66 @@ def run_backtest(
 
     if poi_result is not None:
         trades += backtest_pois(df, poi_result["order_blocks"], "OrderBlock", reward_r=reward_r, max_bars=max_bars)
+        trades += backtest_pois(df, poi_result.get("extreme_order_blocks", []), "ExtremeOB", reward_r=reward_r, max_bars=max_bars)
         trades += backtest_pois(df, poi_result["mitigation_blocks"], "MitigationBlock", reward_r=reward_r, max_bars=max_bars)
         trades += backtest_pois(df, poi_result.get("breaker_blocks", []), "BreakerBlock", reward_r=reward_r, max_bars=max_bars)
         valid_fvgs = [f for f in poi_result["fvgs"] if f.valid]
         trades += backtest_pois(df, valid_fvgs, "FVG", reward_r=reward_r, max_bars=max_bars)
+
+    return {"trades": trades, "stats": summarize_trades(trades)}
+
+
+def run_extended_backtest(
+    df: pd.DataFrame,
+    structure_result: dict,
+    poi_result: dict,
+    reward_r: float = 2.0,
+    max_bars: int = 20,
+) -> dict:
+    """
+    Runs run_backtest()'s full signal set, PLUS the newer comparisons
+    built on top of it, each labeled distinctly so they show up next to
+    (not blended into) the baseline they're being compared against:
+      - "<TYPE> (swing-POI)": every POI type re-derived from swing-tier
+        structure instead of internal (poi_engine.analyze_poi_swing_tier)
+        -- "mark only the important levels" applied to POI derivation,
+        the same idea filter_swing_structure() already applies to
+        BOS/CHoCH itself.
+      - "IDM (POI confluence)": IDM events filtered down to only those
+        with an existing, unmitigated POI sitting just beyond the sweep
+        in the expected direction (poi_engine.find_idm_confluence_pois).
+      - "PO3": session Accumulation/Manipulation/Distribution setups
+        (session_model.find_po3_setups) -- contributes zero trades on
+        daily/weekly/monthly data, since a single-candle "day" carries
+        no intraday opening range.
+
+    Kept separate from run_backtest() rather than folded into it (more
+    parameters bolted on) so run_backtest()'s existing signature, every
+    caller, and every test stay untouched.
+    """
+    from poi_engine import analyze_poi_swing_tier, find_idm_confluence_pois
+    from session_model import find_po3_setups
+
+    base = run_backtest(df, structure_result, poi_result, reward_r=reward_r, max_bars=max_bars)
+    trades = list(base["trades"])
+
+    swing_poi = analyze_poi_swing_tier(df, structure_result)
+    trades += backtest_pois(df, swing_poi["order_blocks"], "OrderBlock (swing-POI)", reward_r=reward_r, max_bars=max_bars)
+    trades += backtest_pois(df, swing_poi.get("extreme_order_blocks", []), "ExtremeOB (swing-POI)", reward_r=reward_r, max_bars=max_bars)
+    trades += backtest_pois(df, swing_poi["mitigation_blocks"], "MitigationBlock (swing-POI)", reward_r=reward_r, max_bars=max_bars)
+    trades += backtest_pois(df, swing_poi.get("breaker_blocks", []), "BreakerBlock (swing-POI)", reward_r=reward_r, max_bars=max_bars)
+    valid_fvgs_swing = [f for f in swing_poi["fvgs"] if f.valid]
+    trades += backtest_pois(df, valid_fvgs_swing, "FVG (swing-POI)", reward_r=reward_r, max_bars=max_bars)
+
+    idm_events = [e for e in structure_result["events"] if e.event_type == "IDM"]
+    confluence_map = find_idm_confluence_pois(structure_result["events"], poi_result)
+    idm_confluence_events = [e for e in idm_events if e.index in confluence_map]
+    trades += backtest_structure_events(
+        df, idm_confluence_events, reward_r=reward_r, max_bars=max_bars, label_suffix=" (POI confluence)",
+    )
+
+    po3_setups = find_po3_setups(df)
+    trades += backtest_po3_setups(df, po3_setups, reward_r=reward_r, max_bars=max_bars)
 
     return {"trades": trades, "stats": summarize_trades(trades)}
 

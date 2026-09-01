@@ -11,13 +11,16 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from structure_engine import StructureEvent  # noqa: E402
-from poi_engine import OrderBlock  # noqa: E402
+from structure_engine import StructureEvent, analyze_structure  # noqa: E402
+from poi_engine import OrderBlock, analyze_poi  # noqa: E402
+from session_model import PO3Setup  # noqa: E402
 from backtester import (  # noqa: E402
     Outcome,
     Trade,
     backtest_structure_events,
     backtest_pois,
+    backtest_po3_setups,
+    run_extended_backtest,
     summarize_trades,
     _simulate_trade,
 )
@@ -204,6 +207,70 @@ def test_poi_trade_invalidated_at_entry_is_skipped():
 
 
 # ---------------------------------------------------------------------------
+# backtest_po3_setups
+# ---------------------------------------------------------------------------
+
+def test_po3_setup_backtests_as_a_trade_in_its_own_direction():
+    # bullish distribution setup: entry=100, stop=95, risk=5, reward_r=2
+    # -> target=110. Price rallies to 111 by i=1 (entry_index+1).
+    setup = PO3Setup(
+        day=None, accumulation_low=95, accumulation_high=105,
+        manipulation_index=0, manipulation_direction="bearish",
+        distribution_direction="bullish", entry_index=0, entry_price=100, stop_price=95,
+    )
+    df = candles([
+        (100, 101, 99, 100),
+        (100, 112, 99, 111),  # high=112 >= target=110 -> WIN
+    ])
+    trades = backtest_po3_setups(df, [setup], reward_r=2.0, max_bars=10)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.source_type == "PO3"
+    assert t.entry_price == 100 and t.stop_price == 95 and t.target_price == 110
+    assert t.outcome == Outcome.WIN
+    print("PASS: PO3 setup backtests using its own entry/stop/distribution-direction")
+
+
+def test_po3_setup_invalidated_at_entry_is_skipped():
+    # bullish setup but entry_price is already below stop_price -- an
+    # impossible/invalidated configuration, must produce no trade.
+    setup = PO3Setup(
+        day=None, accumulation_low=95, accumulation_high=105,
+        manipulation_index=0, manipulation_direction="bearish",
+        distribution_direction="bullish", entry_index=0, entry_price=90, stop_price=95,
+    )
+    df = candles([(90, 91, 89, 90)] * 3)
+    trades = backtest_po3_setups(df, [setup])
+    assert trades == []
+    print("PASS: a PO3 setup with entry already through its own stop produces no trade")
+
+
+# ---------------------------------------------------------------------------
+# run_extended_backtest
+# ---------------------------------------------------------------------------
+
+def test_run_extended_backtest_includes_swing_poi_and_po3_labels():
+    df = candles([
+        (95, 96, 94, 95), (95, 97, 94, 96), (96, 98, 95, 97), (97, 102, 96, 101),
+        (101, 103, 100, 102), (102, 112, 101, 111), (111, 112, 94, 95), (95, 96, 93, 94),
+    ])
+    structure_result = analyze_structure(df, lookback=1)
+    poi_result = analyze_poi(df, structure_result["swings"], structure_result["events"])
+    result = run_extended_backtest(df, structure_result, poi_result)
+
+    # Not asserting specific signal counts (this is generic hand-built
+    # data, not a scenario engineered to produce every signal type) --
+    # just that it runs cleanly end-to-end, in particular that PO3's
+    # DatetimeIndex requirement doesn't crash on this candles() helper's
+    # plain RangeIndex (see session_model's isinstance guard), and that
+    # it produces no PO3 trades on data with no calendar-day structure.
+    assert isinstance(result["trades"], list)
+    source_types = set(result["stats"].keys())
+    assert "PO3" not in source_types, "PO3 must contribute nothing on a non-DatetimeIndex df"
+    print("PASS: run_extended_backtest runs without error and PO3 is correctly absent on non-intraday data")
+
+
+# ---------------------------------------------------------------------------
 # summarize_trades
 # ---------------------------------------------------------------------------
 
@@ -247,6 +314,9 @@ if __name__ == "__main__":
     test_poi_trade_skips_unmitigated_zones()
     test_poi_trade_uses_far_edge_as_stop()
     test_poi_trade_invalidated_at_entry_is_skipped()
+    test_po3_setup_backtests_as_a_trade_in_its_own_direction()
+    test_po3_setup_invalidated_at_entry_is_skipped()
+    test_run_extended_backtest_includes_swing_poi_and_po3_labels()
     test_summarize_trades_computes_win_rate_and_expectancy()
     test_summarize_trades_groups_by_source_type()
     print("\nAll backtester tests passed.")

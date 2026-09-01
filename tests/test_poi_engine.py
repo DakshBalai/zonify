@@ -15,15 +15,20 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from structure_engine import SwingPoint, StructureEvent  # noqa: E402
+from structure_engine import SwingPoint, StructureEvent, analyze_structure  # noqa: E402
 from poi_engine import (  # noqa: E402
+    FVG,
     OrderBlock,
     compute_dealing_range,
     find_fvgs,
     find_order_blocks,
+    find_extreme_order_blocks,
     find_mitigation_blocks,
     find_breaker_blocks,
+    find_idm_confluence_pois,
     apply_mitigation,
+    analyze_poi,
+    analyze_poi_swing_tier,
 )
 
 
@@ -179,6 +184,46 @@ def test_order_block_skips_multiple_same_color_candles():
 
 
 # ---------------------------------------------------------------------------
+# Extreme Order Blocks
+# ---------------------------------------------------------------------------
+
+def test_extreme_order_block_picks_most_extreme_candle_in_the_run():
+    # Two reds before the green run: index0 low=9.5 (the true extreme),
+    # index1 low=9.8 (nearer to the run, less extreme) -- the extreme OB
+    # must reach past the nearer red (index1) to find the deeper one.
+    df = candles([
+        (10.5, 10.6, 9.5, 9.6),    # i=0 red (close 9.6 < open 10.5), low=9.5
+        (10.3, 10.4, 9.8, 9.9),    # i=1 red (close 9.9 < open 10.3), low=9.8
+        (9.9, 10.6, 9.9, 10.5),    # i=2 green
+        (10.5, 11.2, 10.5, 11.0),  # i=3 green
+        (11.0, 12.0, 11.0, 11.9),  # i=4 green, BOS close
+    ])
+    events = [StructureEvent(index=4, event_type="BOS", direction="bullish", price=11.9,
+                              source_swing_index=0, source_swing_price=10.6)]
+    regular = find_order_blocks(df, events)
+    extreme = find_extreme_order_blocks(df, events)
+    assert regular[0].index == 1, f"regular OB should be the nearer red (index 1), got {regular[0].index}"
+    assert extreme[0].index == 0, f"extreme OB should be the deeper red (index 0), got {extreme[0].index}"
+    assert extreme[0].zone_low == 9.5
+    print("PASS: extreme order block reaches past the nearer candle to the true extreme of the run")
+
+
+def test_extreme_order_block_matches_regular_when_run_has_one_candle():
+    df = candles([
+        (10, 10.2, 9.5, 9.6),
+        (9.6, 10.5, 9.6, 10.4),
+        (10.4, 11.2, 10.4, 11.0),
+        (11.0, 12.0, 11.0, 11.8),
+    ])
+    events = [StructureEvent(index=3, event_type="BOS", direction="bullish", price=11.8,
+                              source_swing_index=0, source_swing_price=10.5)]
+    regular = find_order_blocks(df, events)
+    extreme = find_extreme_order_blocks(df, events)
+    assert extreme[0].index == regular[0].index == 0
+    print("PASS: extreme order block matches the regular OB when the opposite run is only one candle long")
+
+
+# ---------------------------------------------------------------------------
 # Mitigation Blocks
 # ---------------------------------------------------------------------------
 
@@ -326,6 +371,97 @@ def test_breaker_block_mitigation_tracks_from_confirmation_candle():
 
 
 # ---------------------------------------------------------------------------
+# analyze_poi_swing_tier
+# ---------------------------------------------------------------------------
+
+def test_analyze_poi_swing_tier_uses_swing_structure_inputs():
+    # Not testing fractal detection here -- just confirming
+    # analyze_poi_swing_tier() actually feeds swing_structure /
+    # swing_structure_events through to analyze_poi(), rather than
+    # silently using the internal-tier swings/events instead.
+    df = candles([
+        (95, 96, 94, 95), (95, 97, 94, 96), (96, 98, 95, 97), (97, 102, 96, 101),
+        (101, 103, 100, 102), (102, 112, 101, 111), (111, 112, 94, 95),
+    ])
+    structure_result = analyze_structure(df, lookback=1)
+    swing_poi = analyze_poi_swing_tier(df, structure_result)
+    manual = analyze_poi(df, structure_result["swing_structure"], structure_result["swing_structure_events"])
+    assert [ob.index for ob in swing_poi["order_blocks"]] == [ob.index for ob in manual["order_blocks"]]
+    assert set(swing_poi.keys()) == {
+        "fvgs", "order_blocks", "extreme_order_blocks", "mitigation_blocks", "breaker_blocks",
+    }
+    print("PASS: analyze_poi_swing_tier derives every POI from swing-tier structure, not internal")
+
+
+# ---------------------------------------------------------------------------
+# IDM POI confluence
+# ---------------------------------------------------------------------------
+
+def test_idm_confluence_finds_nearest_qualifying_poi_above_bullish_sweep():
+    idm = StructureEvent(index=5, event_type="IDM", direction="bullish", price=95.0,
+                          source_swing_index=1, source_swing_price=94.0)
+    near_ob = OrderBlock(index=2, direction="bullish", zone_low=100.0, zone_high=102.0, source_event_index=1)
+    far_ob = OrderBlock(index=1, direction="bullish", zone_low=110.0, zone_high=112.0, source_event_index=0)
+    poi_result = {"fvgs": [], "order_blocks": [near_ob, far_ob], "mitigation_blocks": [], "breaker_blocks": []}
+
+    confluence = find_idm_confluence_pois([idm], poi_result)
+    assert confluence[idm.index] is near_ob, "should pick the NEAREST qualifying POI, not just any"
+    print("PASS: IDM confluence picks the nearest qualifying POI above a bullish sweep")
+
+
+def test_idm_confluence_excludes_poi_on_wrong_side():
+    idm = StructureEvent(index=5, event_type="IDM", direction="bullish", price=95.0,
+                          source_swing_index=1, source_swing_price=94.0)
+    below_ob = OrderBlock(index=2, direction="bullish", zone_low=80.0, zone_high=82.0, source_event_index=1)
+    poi_result = {"fvgs": [], "order_blocks": [below_ob], "mitigation_blocks": [], "breaker_blocks": []}
+
+    confluence = find_idm_confluence_pois([idm], poi_result)
+    assert idm.index not in confluence
+    print("PASS: IDM confluence excludes a POI on the wrong side of the sweep")
+
+
+def test_idm_confluence_excludes_poi_formed_after_idm():
+    idm = StructureEvent(index=5, event_type="IDM", direction="bullish", price=95.0,
+                          source_swing_index=1, source_swing_price=94.0)
+    later_ob = OrderBlock(index=6, direction="bullish", zone_low=100.0, zone_high=102.0, source_event_index=6)
+    poi_result = {"fvgs": [], "order_blocks": [later_ob], "mitigation_blocks": [], "breaker_blocks": []}
+
+    confluence = find_idm_confluence_pois([idm], poi_result)
+    assert idm.index not in confluence, "a POI formed at/after the sweep is lookahead, must be excluded"
+    print("PASS: IDM confluence excludes a POI that formed at or after the sweep (no lookahead)")
+
+
+def test_idm_confluence_excludes_already_mitigated_poi():
+    idm = StructureEvent(index=5, event_type="IDM", direction="bullish", price=95.0,
+                          source_swing_index=1, source_swing_price=94.0)
+    used_up_ob = OrderBlock(index=2, direction="bullish", zone_low=100.0, zone_high=102.0, source_event_index=1,
+                             mitigated=True, mitigated_index=4)
+    poi_result = {"fvgs": [], "order_blocks": [used_up_ob], "mitigation_blocks": [], "breaker_blocks": []}
+
+    confluence = find_idm_confluence_pois([idm], poi_result)
+    assert idm.index not in confluence, "a POI already used up before the sweep doesn't count"
+    print("PASS: IDM confluence excludes a POI already mitigated before the sweep")
+
+
+def test_idm_confluence_uses_fvg_end_index_not_index_attr():
+    idm = StructureEvent(index=5, event_type="IDM", direction="bearish", price=100.0,
+                          source_swing_index=1, source_swing_price=101.0)
+    fvg = FVG(start_index=1, end_index=3, direction="bearish", zone_low=90.0, zone_high=92.0, valid=True)
+    poi_result = {"fvgs": [fvg], "order_blocks": [], "mitigation_blocks": [], "breaker_blocks": []}
+
+    confluence = find_idm_confluence_pois([idm], poi_result)
+    assert confluence[idm.index] is fvg
+    print("PASS: IDM confluence reads an FVG's formation point from end_index, not index")
+
+
+def test_idm_confluence_empty_when_no_idm_events():
+    poi_result = {"fvgs": [], "order_blocks": [], "mitigation_blocks": [], "breaker_blocks": []}
+    events = [StructureEvent(index=1, event_type="BOS", direction="bullish", price=100.0)]
+    assert find_idm_confluence_pois(events, poi_result) == {}
+    print("PASS: IDM confluence returns empty when there are no IDM events at all")
+
+
+# ---------------------------------------------------------------------------
 # Mitigation tracking
 # ---------------------------------------------------------------------------
 
@@ -370,6 +506,8 @@ if __name__ == "__main__":
     test_dealing_range_excludes_lookahead()
     test_order_block_finds_last_opposite_candle()
     test_order_block_skips_multiple_same_color_candles()
+    test_extreme_order_block_picks_most_extreme_candle_in_the_run()
+    test_extreme_order_block_matches_regular_when_run_has_one_candle()
     test_mitigation_block_derived_from_idm_event()
     test_breaker_block_created_when_ob_far_edge_is_closed_through_for_two_bars()
     test_breaker_block_flips_bearish_ob_to_bullish()
@@ -377,6 +515,13 @@ if __name__ == "__main__":
     test_breaker_block_rejects_single_bar_fakeout()
     test_breaker_block_confirm_bars_is_configurable()
     test_breaker_block_mitigation_tracks_from_confirmation_candle()
+    test_analyze_poi_swing_tier_uses_swing_structure_inputs()
+    test_idm_confluence_finds_nearest_qualifying_poi_above_bullish_sweep()
+    test_idm_confluence_excludes_poi_on_wrong_side()
+    test_idm_confluence_excludes_poi_formed_after_idm()
+    test_idm_confluence_excludes_already_mitigated_poi()
+    test_idm_confluence_uses_fvg_end_index_not_index_attr()
+    test_idm_confluence_empty_when_no_idm_events()
     test_apply_mitigation_flags_first_touch()
     test_apply_mitigation_leaves_untouched_poi_unmitigated()
     print("\nAll poi_engine tests passed.")

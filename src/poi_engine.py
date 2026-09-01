@@ -192,6 +192,47 @@ def _find_last_opposite_candle(df: pd.DataFrame, before_index: int, impulse_dire
     return None
 
 
+def _find_extreme_opposite_candle(df: pd.DataFrame, before_index: int, impulse_direction: str) -> int | None:
+    """
+    Like _find_last_opposite_candle(), but instead of stopping at the
+    single opposite-colored candle nearest the impulse, continues
+    backward through the ENTIRE contiguous run of opposite-colored
+    candles and returns whichever one in that run is most extreme --
+    lowest low for a bullish impulse, highest high for a bearish one.
+
+    This is the "Extreme Order Block": the true origin of the whole
+    consolidation the impulse broke out of, not just whichever single
+    candle happens to sit closest to it. It gives a deeper zone (better
+    price if reached), at the cost of being reached less often than the
+    nearer, ordinary Order Block.
+    """
+    opens, closes = df["open"].values, df["close"].values
+    highs, lows = df["high"].values, df["low"].values
+
+    i = before_index - 1
+    while i >= 0:
+        is_bullish_candle = closes[i] > opens[i]
+        matches_impulse = is_bullish_candle if impulse_direction == "bullish" else not is_bullish_candle
+        if not matches_impulse:
+            break
+        i -= 1
+    if i < 0:
+        return None
+
+    run_indices = []
+    while i >= 0:
+        is_bullish_candle = closes[i] > opens[i]
+        matches_impulse = is_bullish_candle if impulse_direction == "bullish" else not is_bullish_candle
+        if matches_impulse:
+            break
+        run_indices.append(i)
+        i -= 1
+
+    if impulse_direction == "bullish":
+        return min(run_indices, key=lambda k: lows[k])
+    return max(run_indices, key=lambda k: highs[k])
+
+
 def find_order_blocks(df: pd.DataFrame, events: list) -> list[OrderBlock]:
     """One Order Block per BOS/CHoCH event, per project convention."""
     highs, lows = df["high"].values, df["low"].values
@@ -201,6 +242,30 @@ def find_order_blocks(df: pd.DataFrame, events: list) -> list[OrderBlock]:
         if event.event_type not in ("BOS", "CHoCH"):
             continue
         ob_index = _find_last_opposite_candle(df, event.index, event.direction)
+        if ob_index is None:
+            continue
+        blocks.append(OrderBlock(
+            index=ob_index, direction=event.direction,
+            zone_low=lows[ob_index], zone_high=highs[ob_index],
+            source_event_index=event.index,
+        ))
+    return blocks
+
+
+def find_extreme_order_blocks(df: pd.DataFrame, events: list) -> list[OrderBlock]:
+    """
+    One Extreme Order Block per BOS/CHoCH event -- same OrderBlock
+    dataclass, same one-per-event rule as find_order_blocks(), but
+    using _find_extreme_opposite_candle() instead of
+    _find_last_opposite_candle() to pick the zone.
+    """
+    highs, lows = df["high"].values, df["low"].values
+    blocks = []
+
+    for event in events:
+        if event.event_type not in ("BOS", "CHoCH"):
+            continue
+        ob_index = _find_extreme_opposite_candle(df, event.index, event.direction)
         if ob_index is None:
             continue
         blocks.append(OrderBlock(
@@ -310,13 +375,15 @@ def apply_mitigation(df: pd.DataFrame, pois: list, formation_index_attr: str = "
 
 
 def analyze_poi(df: pd.DataFrame, swings: list, events: list) -> dict:
-    """Convenience wrapper: runs FVG/OB/MB/Breaker detection + mitigation tracking."""
+    """Convenience wrapper: runs FVG/OB/MB/Breaker/ExtremeOB detection + mitigation tracking."""
     fvgs = find_fvgs(df, swings)
     order_blocks = find_order_blocks(df, events)
+    extreme_order_blocks = find_extreme_order_blocks(df, events)
     mitigation_blocks = find_mitigation_blocks(df, events)
 
     apply_mitigation(df, fvgs, formation_index_attr="end_index")
     apply_mitigation(df, order_blocks, formation_index_attr="index")
+    apply_mitigation(df, extreme_order_blocks, formation_index_attr="index")
     apply_mitigation(df, mitigation_blocks, formation_index_attr="index")
 
     # Breaker Blocks are derived from order_blocks' own zones/directions,
@@ -331,6 +398,88 @@ def analyze_poi(df: pd.DataFrame, swings: list, events: list) -> dict:
     return {
         "fvgs": fvgs,
         "order_blocks": order_blocks,
+        "extreme_order_blocks": extreme_order_blocks,
         "mitigation_blocks": mitigation_blocks,
         "breaker_blocks": breaker_blocks,
     }
+
+
+def analyze_poi_swing_tier(df: pd.DataFrame, structure_result: dict) -> dict:
+    """
+    Same as analyze_poi(), but derives every zone from SWING-TIER
+    structure (structure_result["swing_structure"] /
+    ["swing_structure_events"], from filter_swing_structure() in
+    structure_engine.py) instead of the raw internal-tier swings/events
+    analyze_poi() uses by default.
+
+    Rationale: an Order Block is "the last opposite candle before the
+    impulsive move that caused a BOS/CHoCH" -- but that's only a
+    meaningful zone if the BOS/CHoCH it's anchored to broke a genuinely
+    significant swing, not one that was immediately exceeded and never
+    really "the" high/low of that leg (see filter_swing_structure()'s
+    own docstring). This restricts every POI type to only the
+    significant-swing tier, the same "mark only the important levels"
+    idea already applied to BOS/CHoCH itself.
+
+    Just calls analyze_poi() with the swing-tier inputs -- no new
+    detection logic, so there's still exactly one implementation of
+    what an FVG/OB/MB/Breaker/ExtremeOB is.
+    """
+    return analyze_poi(df, structure_result["swing_structure"], structure_result["swing_structure_events"])
+
+
+def find_idm_confluence_pois(events: list, poi_result: dict) -> dict:
+    """
+    For each IDM event, finds the nearest already-formed, still-live
+    POI (FVG / OrderBlock / MitigationBlock / BreakerBlock) sitting on
+    the correct side of the sweep -- above the sweep price for a
+    bullish IDM (expecting the reversal to rally into it), below it for
+    a bearish one.
+
+    This is the "IDM POI" idea: an inducement sweep exists specifically
+    to clear out the liquidity resting in front of the level smart
+    money actually wants to trade from, so the very next POI beyond the
+    sweep is where the real move is expected to go -- as opposed to
+    trading the sweep itself with no further confirmation.
+
+    Only POIs that both (a) formed strictly BEFORE the IDM event's
+    index, and (b) were not already mitigated by that same index, are
+    eligible -- an IDM can't be confirmed by a zone that didn't exist
+    yet, or one that was already used up, without lookahead.
+
+    Returns {idm_event_index: poi_object} -- an IDM event with no
+    qualifying nearby POI is simply absent from the dict, not an error.
+    """
+    idm_events = [e for e in events if e.event_type == "IDM"]
+    if not idm_events:
+        return {}
+
+    all_pois = []
+    for key in ("fvgs", "order_blocks", "mitigation_blocks", "breaker_blocks"):
+        all_pois.extend(poi_result.get(key, []))
+
+    result = {}
+    for idm in idm_events:
+        candidates = []
+        for poi in all_pois:
+            formed_at = getattr(poi, "end_index", None)
+            if formed_at is None:
+                formed_at = poi.index
+            if formed_at >= idm.index:
+                continue  # must already exist before the sweep -- no lookahead
+            if poi.mitigated and poi.mitigated_index is not None and poi.mitigated_index <= idm.index:
+                continue  # already used up before the sweep even happened
+
+            zone_mid = (poi.zone_low + poi.zone_high) / 2
+            if idm.direction == "bullish" and zone_mid <= idm.price:
+                continue  # must sit ABOVE the sweep for a bullish IDM
+            if idm.direction == "bearish" and zone_mid >= idm.price:
+                continue  # must sit BELOW the sweep for a bearish IDM
+
+            candidates.append((abs(zone_mid - idm.price), poi))
+
+        if candidates:
+            candidates.sort(key=lambda pair: pair[0])
+            result[idm.index] = candidates[0][1]
+
+    return result
