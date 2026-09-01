@@ -92,6 +92,48 @@ def find_swing_points(df: pd.DataFrame, lookback: int = 3) -> list[SwingPoint]:
     return swings
 
 
+def filter_swing_structure(swings: list[SwingPoint]) -> list[SwingPoint]:
+    """
+    Collapses the raw fractal swing list into a strict, alternating
+    "swing structure" zigzag -- only genuinely significant swing points
+    survive, and highs/lows always alternate.
+
+    Why this matters: find_swing_points() can return several highs in a
+    row before the next low forms (or vice versa) whenever price keeps
+    printing new fractal highs without a low in between -- each one WAS
+    a real fractal top, but only the LAST (most extreme) one before the
+    reversal is structurally significant; the earlier ones got taken
+    out immediately and a trader reading the chart would never mark
+    them. Feeding every one of them into detect_structure_events() (as
+    the raw `swings` list does, for "internal structure") is what
+    produces bias flips on minor pullback swings a trader would never
+    treat as a real CHoCH -- exactly the false-signal problem this
+    exists to fix for "swing structure" (see analyze_structure()).
+
+    Algorithm: walk the raw swings in order, extending a same-kind
+    "candidate" swing as long as later same-kind swings are more
+    extreme, and only committing that candidate once a swing of the
+    OPPOSITE kind appears. This is the classic zigzag re-filter.
+    """
+    if not swings:
+        return []
+
+    result = []
+    candidate = swings[0]
+
+    for s in swings[1:]:
+        if s.kind == candidate.kind:
+            more_extreme = s.price > candidate.price if s.kind == "high" else s.price < candidate.price
+            if more_extreme:
+                candidate = s
+        else:
+            result.append(candidate)
+            candidate = s
+
+    result.append(candidate)
+    return result
+
+
 def detect_structure_events(df: pd.DataFrame, swings: list[SwingPoint]) -> tuple[list[StructureEvent], "Bias"]:
     """
     Walks forward through the candles, tracking the prevailing bias and
@@ -180,16 +222,40 @@ def detect_structure_events(df: pd.DataFrame, swings: list[SwingPoint]) -> tuple
 
 
 def analyze_structure(df: pd.DataFrame, lookback: int = 3) -> dict:
-    """Convenience wrapper: runs the full pipeline and returns everything
-    needed for both visualization and the current top-line bias."""
+    """
+    Convenience wrapper: runs the full pipeline and returns everything
+    needed for both visualization and the current top-line bias.
+
+    Runs detect_structure_events() TWICE, on two different swing lists,
+    because "internal structure" and "swing structure" are genuinely
+    different things a trader tracks separately, not two views of the
+    same data:
+      - internal (swings/events/current_bias): every raw fractal swing,
+        unfiltered -- fine-grained, but a BOS/CHoCH here can fire
+        against a swing that was never structurally significant.
+      - swing (swing_structure/swing_structure_events/swing_bias): the
+        filtered zigzag from filter_swing_structure() -- only genuine
+        trend-defining highs/lows, so BOS/CHoCH here means what a
+        trader actually means by "structure broke."
+    detect_structure_events() itself is unchanged and reused as-is for
+    both -- it has no notion of which tier it's running on, it just
+    walks whatever swing list it's given.
+    """
     swings = find_swing_points(df, lookback=lookback)
     events, current_bias = detect_structure_events(df, swings)
-
     last_event = events[-1] if events else None
+
+    swing_structure = filter_swing_structure(swings)
+    swing_structure_events, swing_bias = detect_structure_events(df, swing_structure)
+    last_swing_structure_event = swing_structure_events[-1] if swing_structure_events else None
 
     return {
         "swings": swings,
         "events": events,
         "current_bias": current_bias,
         "last_event": last_event,
+        "swing_structure": swing_structure,
+        "swing_structure_events": swing_structure_events,
+        "swing_bias": swing_bias,
+        "last_swing_structure_event": last_swing_structure_event,
     }

@@ -109,8 +109,15 @@ def backtest_structure_events(
     events: list,
     reward_r: float = 2.0,
     max_bars: int = 20,
+    label_suffix: str = "",
 ) -> list[Trade]:
-    """One trade per BOS/CHoCH/IDM event that has a source swing to derive a stop from."""
+    """
+    One trade per BOS/CHoCH/IDM event that has a source swing to derive
+    a stop from. `label_suffix` is appended to the event's own type to
+    make the resulting Trade.source_type -- used to keep internal-tier
+    ("BOS") and swing-tier ("BOS (swing)") results from being lumped
+    together when both are backtested via run_backtest().
+    """
     closes = df["close"].values
     trades = []
 
@@ -138,7 +145,7 @@ def backtest_structure_events(
         target_price = _target_from_risk(entry_price, risk, event.direction, reward_r)
         trades.append(_simulate_trade(
             df, event.index, entry_price, stop_price, target_price,
-            event.direction, max_bars, event.event_type, reward_r,
+            event.direction, max_bars, event.event_type + label_suffix, reward_r,
         ))
 
     return trades
@@ -214,7 +221,7 @@ def format_stats(stats: dict[str, BacktestStats]) -> str:
     for source_type in sorted(stats):
         s = stats[source_type]
         lines.append(
-            f"{source_type:16s} n={s.n_trades:4d}  win_rate={s.win_rate:5.1%}  "
+            f"{source_type:24s} n={s.n_trades:4d}  win_rate={s.win_rate:5.1%}  "
             f"expectancy={s.expectancy_r:+.2f}R  (W{s.n_wins}/L{s.n_losses}/T{s.n_timeouts})"
         )
     return "\n".join(lines)
@@ -226,14 +233,28 @@ def run_backtest(
     poi_result: dict | None = None,
     reward_r: float = 2.0,
     max_bars: int = 20,
+    include_swing_structure: bool = True,
 ) -> dict:
     """
     Convenience wrapper: backtests every event/POI type analyze_structure()
     and analyze_poi() produced for this timeframe's data, in one call.
 
+    When structure_result carries swing-tier structure (the
+    filter_swing_structure() output analyze_structure() now includes),
+    those BOS/CHoCH/IDM events are ALSO backtested, labeled "<TYPE>
+    (swing)" so they show up separately from the internal-tier ones
+    instead of being averaged together -- the whole point is to compare
+    the two, not blend them into one misleading number.
+
     Returns {"trades": [...], "stats": {source_type: BacktestStats}}.
     """
     trades = backtest_structure_events(df, structure_result["events"], reward_r=reward_r, max_bars=max_bars)
+
+    if include_swing_structure and "swing_structure_events" in structure_result:
+        trades += backtest_structure_events(
+            df, structure_result["swing_structure_events"], reward_r=reward_r, max_bars=max_bars,
+            label_suffix=" (swing)",
+        )
 
     if poi_result is not None:
         trades += backtest_pois(df, poi_result["order_blocks"], "OrderBlock", reward_r=reward_r, max_bars=max_bars)
