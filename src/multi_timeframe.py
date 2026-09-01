@@ -21,7 +21,9 @@ from structure_engine import Bias, analyze_structure
 from poi_engine import analyze_poi
 
 # Standard top-down order, HTF first -- also used to order any rollup output.
-TIMEFRAME_ORDER = ["monthly", "weekly", "daily", "4h", "15min"]
+# 30min/5min/1min were added for top_down.py's HTF-zone -> LTF-entry
+# drill-down (daily->1h/30min, 4h->15min/5min, 1h->5min/1min).
+TIMEFRAME_ORDER = ["monthly", "weekly", "daily", "4h", "1h", "15min", "30min", "5min", "1min"]
 
 # Swing-detection lookback tuned per timeframe: tighter (smaller) for
 # LTFs where you want finer swings, looser (larger) for HTFs where you
@@ -33,7 +35,11 @@ DEFAULT_LOOKBACK = {
     "weekly": 2,
     "daily": 3,
     "4h": 3,
+    "1h": 3,
     "15min": 4,
+    "30min": 4,
+    "5min": 5,
+    "1min": 5,
 }
 
 
@@ -146,7 +152,11 @@ def fetch_multi_timeframe_data(ticker: str, timeframes: list | None = None) -> d
         "weekly": {"interval": "1wk", "period": "5y"},
         "daily": {"interval": "1d", "period": "2y"},
         "4h": {"interval": "1h", "period": "180d"},   # fetched as 1h, resampled below
+        "1h": {"interval": "1h", "period": "180d"},
         "15min": {"interval": "15m", "period": "60d"},
+        "30min": {"interval": "30m", "period": "60d"},
+        "5min": {"interval": "5m", "period": "60d"},
+        "1min": {"interval": "1m", "period": "7d"},   # yfinance's own hard limit for 1m data
     }
 
     data = {}

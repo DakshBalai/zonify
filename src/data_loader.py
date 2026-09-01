@@ -52,10 +52,16 @@ NSE_SESSION_START = "09:15"
 NSE_SESSION_END = "15:30"
 
 # yfinance interval strings we allow through this project. yfinance
-# supports more (1m, 2m, 5m, 15m, 30m, 90m, 1d, 1wk, 1mo, ...) but we
-# constrain to the set the SMC engine's multi-timeframe orchestration
-# actually uses, so a typo doesn't silently hit yfinance's own defaults.
-SUPPORTED_INTERVALS = {"1mo", "1wk", "1d", "1h", "15m", "5m"}
+# supports more (2m, 90m, ...) but we constrain to the set the SMC
+# engine's multi-timeframe orchestration actually uses, so a typo
+# doesn't silently hit yfinance's own defaults.
+#
+# yfinance's OWN history limits per interval (not something this
+# project controls, and tighter the lower you go): 1h ~730 days,
+# 30m/15m/5m ~60 days, 1m ~7 days. The 1m limit in particular means a
+# 1h->1min top-down drill-down (see top_down.py) only ever has about a
+# week of history to backtest against.
+SUPPORTED_INTERVALS = {"1mo", "1wk", "1d", "1h", "30m", "15m", "5m", "1m"}
 
 
 def normalize_nse_ticker(ticker: str) -> str:
