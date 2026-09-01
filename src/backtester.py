@@ -71,6 +71,7 @@ class BacktestStats:
     n_timeouts: int
     win_rate: float       # wins / (wins + losses); TIMEOUTs excluded from this denominator
     expectancy_r: float    # mean r_multiple across ALL trades (TIMEOUTs count as 0)
+    profit_factor: float | None   # gross R won / gross R lost; None when there are no losses (undefined, not infinite)
 
 
 def _simulate_trade(
@@ -100,7 +101,7 @@ def _simulate_trade(
     return Trade(source_type, direction, entry_index, entry_price, stop_price, target_price, Outcome.TIMEOUT, None, 0.0)
 
 
-def _target_from_risk(entry_price: float, risk: float, direction: str, reward_r: float) -> float:
+def target_from_risk(entry_price: float, risk: float, direction: str, reward_r: float) -> float:
     return entry_price + risk * reward_r if direction == "bullish" else entry_price - risk * reward_r
 
 
@@ -142,7 +143,7 @@ def backtest_structure_events(
         if risk <= 0:
             continue
 
-        target_price = _target_from_risk(entry_price, risk, event.direction, reward_r)
+        target_price = target_from_risk(entry_price, risk, event.direction, reward_r)
         trades.append(_simulate_trade(
             df, event.index, entry_price, stop_price, target_price,
             event.direction, max_bars, event.event_type + label_suffix, reward_r,
@@ -187,7 +188,7 @@ def backtest_pois(
         if risk <= 0:
             continue  # invalidated at entry -- close already through the far edge
 
-        target_price = _target_from_risk(entry_price, risk, poi.direction, reward_r)
+        target_price = target_from_risk(entry_price, risk, poi.direction, reward_r)
         trades.append(_simulate_trade(
             df, entry_index, entry_price, stop_price, target_price,
             poi.direction, max_bars, source_type, reward_r,
@@ -218,7 +219,7 @@ def backtest_po3_setups(
         if risk <= 0:
             continue  # invalidated at entry -- the entry candle already closed through the stop
 
-        target_price = _target_from_risk(s.entry_price, risk, s.distribution_direction, reward_r)
+        target_price = target_from_risk(s.entry_price, risk, s.distribution_direction, reward_r)
         trades.append(_simulate_trade(
             df, s.entry_index, s.entry_price, s.stop_price, target_price,
             s.distribution_direction, max_bars, "PO3", reward_r,
@@ -228,7 +229,7 @@ def backtest_po3_setups(
 
 
 def summarize_trades(trades: list[Trade]) -> dict[str, BacktestStats]:
-    """Groups trades by source_type and computes win rate / expectancy for each."""
+    """Groups trades by source_type and computes win rate / expectancy / profit factor for each."""
     by_type: dict[str, list[Trade]] = {}
     for t in trades:
         by_type.setdefault(t.source_type, []).append(t)
@@ -242,9 +243,50 @@ def summarize_trades(trades: list[Trade]) -> dict[str, BacktestStats]:
         decided = wins + losses
         win_rate = wins / decided if decided else 0.0
         expectancy_r = sum(t.r_multiple for t in group) / n if n else 0.0
-        stats[source_type] = BacktestStats(source_type, n, wins, losses, timeouts, win_rate, expectancy_r)
+
+        gross_win_r = sum(t.r_multiple for t in group if t.r_multiple > 0)
+        gross_loss_r = -sum(t.r_multiple for t in group if t.r_multiple < 0)
+        profit_factor = gross_win_r / gross_loss_r if gross_loss_r > 0 else None
+
+        stats[source_type] = BacktestStats(source_type, n, wins, losses, timeouts, win_rate, expectancy_r, profit_factor)
 
     return stats
+
+
+def compute_equity_curve(trades: list[Trade]) -> list[tuple[int, float]]:
+    """
+    Orders trades by entry_index and returns the cumulative R-multiple
+    running total after each one: [(entry_index, cumulative_r), ...],
+    starting from (a synthetic point before the first trade,) 0.0. This
+    is a pure aggregation over Trade.r_multiple -- it does not change
+    or re-simulate anything _simulate_trade() already decided.
+    """
+    ordered = sorted(trades, key=lambda t: t.entry_index)
+    curve = []
+    running = 0.0
+    for t in ordered:
+        running += t.r_multiple
+        curve.append((t.entry_index, running))
+    return curve
+
+
+def compute_max_drawdown(trades: list[Trade]) -> float:
+    """
+    Max peak-to-trough drop in the cumulative R-multiple equity curve
+    (see compute_equity_curve()), as a positive R value (0.0 if the
+    curve never fell below a prior peak, e.g. an empty or all-winning
+    trade list).
+    """
+    curve = compute_equity_curve(trades)
+    if not curve:
+        return 0.0
+
+    peak = 0.0
+    max_dd = 0.0
+    for _, cumulative in curve:
+        peak = max(peak, cumulative)
+        max_dd = max(max_dd, peak - cumulative)
+    return max_dd
 
 
 def format_stats(stats: dict[str, BacktestStats]) -> str:

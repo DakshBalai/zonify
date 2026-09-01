@@ -38,6 +38,7 @@ from structure_engine import analyze_structure
 from poi_engine import analyze_poi
 from multi_timeframe import DEFAULT_LOOKBACK, analyze_multi_timeframe, fetch_multi_timeframe_data
 from top_down import collect_htf_zones, find_top_down_entries
+from backtester import target_from_risk
 
 # ExtremeOB is preferred over a plain OrderBlock when both exist --
 # every basket backtest run so far found it the stronger of the two.
@@ -61,9 +62,15 @@ class ScreenerResult:
     daily_zone: ScreenerZone
     live_ltf_entry: bool       # a top-down MSS+FVG entry is currently unmitigated on 4h->15min
     current_price: float
+    prev_close: float
+    change_pct: float
+    entry_price: float          # zone's near edge -- where price would first touch it
+    stop_price: float          # zone's far edge -- the SAME rule backtester.backtest_pois() uses
+    target_price: float         # target_from_risk() at reward_r -- the SAME formula the backtest uses
+    reward_r: float
 
 
-def _find_fresh_zone(poi_result: dict, direction: str) -> ScreenerZone | None:
+def find_fresh_zone(poi_result: dict, direction: str) -> ScreenerZone | None:
     """
     Picks the most recently formed, still-unmitigated, direction-
     aligned zone -- ExtremeOB checked first (see _ZONE_PREFERENCE),
@@ -98,13 +105,48 @@ def _has_live_top_down_entry(data: dict, htf_result: dict) -> bool:
     return any(not f.mitigated for f in entries)
 
 
-def screen_ticker(ticker: str) -> ScreenerResult | None:
+def preview_stop_target(zone: ScreenerZone, current_price: float, reward_r: float) -> tuple[float, float, float]:
+    """
+    Previews the entry/stop/target a trade off this zone WOULD use.
+    Entry is the zone's OWN near edge (zone_high for bullish, zone_low
+    for bearish) -- the point price would first touch approaching the
+    zone -- and stop is the far edge, target = target_from_risk() at
+    reward_r: the EXACT SAME rule backtester.backtest_pois() already
+    uses for OrderBlock/ExtremeOB trades (entry near the zone, stop at
+    its far edge), not a new formula invented for display purposes.
+
+    Deliberately NOT current_price as the entry: an unmitigated zone
+    can sit arbitrarily far from where price is trading right now (it
+    hasn't been touched yet), so using the live quote as "entry"
+    produced nonsensical, wildly distant targets -- caught by actually
+    looking at a rendered screener row, not assumed. current_price is
+    only used to check whether the zone has ALREADY been invalidated
+    (price closed through the far edge) before a preview is shown.
+
+    Returns (entry_price, stop_price, target_price).
+    """
+    if zone.direction == "bullish":
+        entry_price, stop_price = zone.zone_high, zone.zone_low
+        invalidated = current_price < stop_price
+    else:
+        entry_price, stop_price = zone.zone_low, zone.zone_high
+        invalidated = current_price > stop_price
+
+    risk = abs(entry_price - stop_price)
+    if risk <= 0 or invalidated:
+        return entry_price, stop_price, entry_price
+
+    target_price = target_from_risk(entry_price, risk, zone.direction, reward_r)
+    return entry_price, stop_price, target_price
+
+
+def screen_ticker(ticker: str, reward_r: float = 2.0) -> ScreenerResult | None:
     """
     Runs the full pipeline for one ticker and returns a ScreenerResult
     if it qualifies for at least the SETUP tier; None otherwise (mixed/
     undetermined HTF bias, or no fresh zone). Needs real network access
     (fetch_multi_timeframe_data) -- not unit-tested here, same as
-    data_loader.fetch_ohlcv itself; _find_fresh_zone() is the piece
+    data_loader.fetch_ohlcv itself; find_fresh_zone() is the piece
     that IS unit-tested (see tests/test_screener.py).
     """
     data = fetch_multi_timeframe_data(ticker, timeframes=["daily", "4h", "15min"])
@@ -114,15 +156,23 @@ def screen_ticker(ticker: str) -> ScreenerResult | None:
         return None
     direction = htf_result["alignment"]
 
-    daily_zone = _find_fresh_zone(htf_result["per_timeframe"]["daily"]["poi"], direction)
+    daily_zone = find_fresh_zone(htf_result["per_timeframe"]["daily"]["poi"], direction)
     if daily_zone is None:
         return None
 
     live_entry = _has_live_top_down_entry(data, htf_result["per_timeframe"]["4h"])
     tier = "STRONG" if live_entry else "SETUP"
 
+    daily_close = data["daily"]["close"]
+    current_price = float(daily_close.iloc[-1])
+    prev_close = float(daily_close.iloc[-2]) if len(daily_close) > 1 else current_price
+    change_pct = (current_price - prev_close) / prev_close * 100 if prev_close else 0.0
+
+    entry_price, stop_price, target_price = preview_stop_target(daily_zone, current_price, reward_r)
+
     return ScreenerResult(
         ticker=ticker, direction=direction, tier=tier,
         daily_zone=daily_zone, live_ltf_entry=live_entry,
-        current_price=float(data["daily"]["close"].iloc[-1]),
+        current_price=current_price, prev_close=prev_close, change_pct=change_pct,
+        entry_price=entry_price, stop_price=stop_price, target_price=target_price, reward_r=reward_r,
     )

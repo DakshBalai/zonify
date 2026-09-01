@@ -3,17 +3,25 @@ chart.py
 Interactive Plotly candlestick chart with market-structure events drawn
 the way SMC charts actually look, not as floating scatter markers.
 
-Convention (per project owner):
-  - BOS / CHoCH: a straight line connecting the swing point that got
-    broken directly to the candle where the break closed -- solid line.
-    CHoCH is drawn slightly thicker than BOS since it's the more
-    significant event (a bias flip vs. a continuation).
-  - IDM: a straight line connecting the swept swing point directly to
-    the candle that swept it (wick) -- dotted line, since a sweep is a
-    "grab and reverse", not a structural break.
-  - Direction still carries meaning via color: green = bullish event,
-    red = bearish event -- same convention a trader reading a real SMC
-    chart would expect.
+Design system (shared with app.py's CSS so the chart and the rest of
+the UI read as one product, not a chart bolted onto a generic page):
+  BG_PRIMARY / BG_CARD / BORDER / ACCENT / TEXT_* -- see constants below.
+Directional color is used CONSISTENTLY across every zone/event type --
+green for bullish, red for bearish -- and zone TYPES are told apart by
+line style/weight instead of by hue, the same way a real SMC chart
+layers many concepts without turning into a rainbow:
+  OrderBlock       solid border
+  ExtremeOB        solid border, thicker + a star in its label --
+                   this is the strongest-validated signal in the
+                   project's own backtests, and looks like it
+  MitigationBlock  dotted, muted grey (the weakest-validated signal)
+  BreakerBlock     dash-dot, colored by its OWN (flipped) direction
+  BOS              thin solid line, directional color
+  CHoCH            thicker solid line, directional color (a bias flip
+                   is the more significant event)
+  IDM              dotted, a muted violet -- neither bullish nor
+                   bearish-green/red, since a sweep is a liquidity
+                   mechanic, not a directional structural claim
 
 Every category (each POI type, each event type, swing markers) is its
 own legend entry with a shared `legendgroup`, and the layout sets
@@ -24,39 +32,53 @@ experience" toggle: turn off what you don't want to see, per chart.
 This module only ever CONSUMES the output of structure_engine.py
 (analyze_structure()) / poi_engine.py (analyze_poi()) / top_down.py
 (HTFZone) -- it doesn't recompute or reinterpret anything, so a chart
-bug here can never be confused with a detection-logic bug.
+bug here can never be confused with a detection-logic bug. The one
+exception is deliberately labeled as such: "BSL"/"SSL" liquidity lines
+are just the most recent swing high/low, RELABELED with the SMC terms
+for what they represent (a swing high is where buy-side stops/orders
+rest above price; a swing low is where sell-side liquidity rests below
+it) -- no new detection, just honest reuse of swings already computed.
 """
 
 from __future__ import annotations
 
 import plotly.graph_objects as go
 
-BULLISH_COLOR = "#26A69A"   # teal-green, matches typical dark-theme candle up-color
-BEARISH_COLOR = "#EF5350"   # red, matches typical dark-theme candle down-color
-IDM_COLOR = "#B39DDB"       # muted purple, visually distinct from BOS/CHoCH
+# ---------------------------------------------------------------------------
+# Design tokens -- kept in one place and imported by app.py so the chart
+# and the surrounding dashboard chrome use identical colors.
+# ---------------------------------------------------------------------------
+BG_PRIMARY = "#080C12"
+BG_CARD = "#10161F"
+BG_CARD_ALT = "#111820"
+BORDER = "#202A36"
+ACCENT = "#21D4B4"
+BULLISH_COLOR = "#22C55E"   # professional green -- deliberately distinct from ACCENT (brand teal)
+BEARISH_COLOR = "#EF4444"   # professional red
+TEXT_PRIMARY = "#F5F7FA"
+TEXT_SECONDARY = "#94A3B8"
+TEXT_MUTED = "#64748B"
+FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, sans-serif"
+
+IDM_COLOR = "#A78BFA"   # muted violet -- a sweep is a liquidity mechanic, not a directional claim
+MB_COLOR = "#7C8698"     # muted grey -- MitigationBlock is this project's weakest-validated signal
+LIQUIDITY_COLOR = "#5B6472"
 
 EVENT_LINE_STYLE = {
-    "BOS": {"dash": "solid", "width": 1.5},
-    "CHoCH": {"dash": "solid", "width": 2.5},
-    "IDM": {"dash": "dot", "width": 1.5},
+    "BOS": {"dash": "solid", "width": 1.4},
+    "CHoCH": {"dash": "solid", "width": 2.6},
+    "IDM": {"dash": "dot", "width": 1.4},
 }
 
-FVG_BULLISH_COLOR = "rgba(38,166,154,0.18)"   # translucent teal fill
-FVG_BEARISH_COLOR = "rgba(239,83,80,0.18)"    # translucent red fill
-FVG_INVALID_COLOR = "rgba(150,150,150,0.10)"  # faint grey -- valid=False (wrong side of premium/discount)
-OB_BULLISH_BORDER = "#26A69A"
-OB_BEARISH_BORDER = "#EF5350"
-EOB_BULLISH_BORDER = "#00E676"  # brighter green -- ExtremeOB is the strongest-performing signal, deserves to stand out
-EOB_BEARISH_BORDER = "#FF1744"
-MB_BORDER = "#B39DDB"
-BRK_BULLISH_BORDER = "#FFA726"  # orange -- visually distinct from OB's teal/red so a flipped zone reads at a glance
-BRK_BEARISH_BORDER = "#FF7043"
+FVG_BULLISH_FILL = "rgba(34,197,94,0.14)"
+FVG_BEARISH_FILL = "rgba(239,68,68,0.14)"
+FVG_INVALID_FILL = "rgba(148,163,184,0.08)"   # faint grey -- valid=False (wrong side of premium/discount)
 
 # One legend entry per higher-timeframe, used by plot_multi_timeframe_zones()
 # to keep "1H FVG" visually distinct from "4H FVG" even though both are FVGs.
 HTF_TIMEFRAME_COLORS = {
-    "monthly": "#E040FB", "weekly": "#7C4DFF", "daily": "#448AFF",
-    "4h": "#00E5FF", "1h": "#FFD740",
+    "monthly": "#C084FC", "weekly": "#818CF8", "daily": "#38BDF8",
+    "4h": "#21D4B4", "1h": "#FBBF24",
 }
 
 
@@ -64,6 +86,58 @@ def _event_color(event) -> str:
     if event.event_type == "IDM":
         return IDM_COLOR
     return BULLISH_COLOR if event.direction == "bullish" else BEARISH_COLOR
+
+
+def _axis_style() -> dict:
+    """Shared crosshair/spike + grid styling for both chart functions below."""
+    spike = dict(
+        showspikes=True, spikemode="across", spikesnap="cursor",
+        spikedash="dot", spikethickness=1, spikecolor=TEXT_MUTED,
+    )
+    return dict(
+        xaxis=dict(gridcolor=BORDER, zerolinecolor=BORDER, showline=True, linecolor=BORDER,
+                   tickfont=dict(color=TEXT_SECONDARY, size=11), **spike),
+        yaxis=dict(gridcolor=BORDER, zerolinecolor=BORDER, showline=True, linecolor=BORDER,
+                   tickfont=dict(color=TEXT_SECONDARY, size=11), side="right", **spike),
+    )
+
+
+def _base_layout(title: str, height: int, x_range=None) -> dict:
+    layout = dict(
+        title=dict(text=title, font=dict(size=15, color=TEXT_PRIMARY, family=FONT_FAMILY)),
+        template="plotly_dark",
+        paper_bgcolor=BG_PRIMARY, plot_bgcolor=BG_PRIMARY,
+        font=dict(family=FONT_FAMILY, color=TEXT_PRIMARY, size=12),
+        xaxis_rangeslider_visible=False,
+        height=height,
+        margin=dict(l=16, r=150, t=48, b=32),
+        hovermode="x",
+        legend=dict(
+            groupclick="togglegroup", orientation="v", yanchor="top", y=1, xanchor="left", x=1.01,
+            bgcolor="rgba(0,0,0,0)", font=dict(size=11, color=TEXT_SECONDARY),
+        ),
+    )
+    axis_style = _axis_style()
+    if x_range is not None:
+        axis_style["xaxis"]["range"] = list(x_range)
+        axis_style["xaxis"]["autorange"] = False
+    layout.update(axis_style)
+    return layout
+
+
+def _default_visible_range(x, n_bars: int = 120):
+    """
+    A candlestick range with thousands of bars (e.g. months of 15min
+    data) renders unreadably dense if Plotly's default "show
+    everything" behavior is left alone. Returns an initial [start, end]
+    x-range showing only the most recent `n_bars` candles -- the user
+    can still zoom/pan to see the rest, this only sets what's visible
+    on first render.
+    """
+    n = len(x)
+    if n <= n_bars:
+        return None
+    return [x[n - n_bars], x[n - 1]]
 
 
 def _zone_trace(x0, x1, y0, y1, fillcolor, line_color, line_width, dash, name, legendgroup, showlegend, hovertext):
@@ -83,15 +157,13 @@ def _add_poi_shapes(
     visible: dict, seen_groups: set,
 ) -> None:
     """
-    Draws FVGs as translucent filled zones (grey if invalid -- i.e. on
-    the wrong side of premium/discount -- unless show_invalid_fvgs=
-    True), Order Blocks / Extreme Order Blocks / Mitigation Blocks /
-    Breaker Blocks as outlined zones (solid border for OB, long-dash
-    for ExtremeOB, dotted for MB, dash-dot for Breaker -- matching the
-    BOS/CHoCH-solid vs IDM-dotted convention used for the event lines).
-    Each zone extends from its formation candle to its mitigation
-    candle, or -- if still unmitigated/"live" -- forward by at most
-    `max_extend` candles (capped at the last candle on the chart).
+    Draws FVGs as translucent filled zones, and Order Blocks / Extreme
+    Order Blocks / Mitigation Blocks / Breaker Blocks as outlined zones
+    -- see the module docstring for the line-style convention that
+    tells each zone TYPE apart while direction stays green/red
+    throughout. Each zone extends from its formation candle to its
+    mitigation candle, or -- if still unmitigated/"live" -- forward by
+    at most `max_extend` candles (capped at the last candle on the chart).
     """
     n = len(x)
 
@@ -121,38 +193,117 @@ def _add_poi_shapes(
     fvgs = [f for f in poi_result.get("fvgs", []) if f.valid or show_invalid_fvgs]
     _add(
         "FVG", fvgs, lambda f: f.end_index,
-        lambda f: "rgba(150,150,150,0.6)" if not f.valid else (BULLISH_COLOR if f.direction == "bullish" else BEARISH_COLOR),
-        lambda f: FVG_INVALID_COLOR if not f.valid else (FVG_BULLISH_COLOR if f.direction == "bullish" else FVG_BEARISH_COLOR),
+        lambda f: "rgba(148,163,184,0.5)" if not f.valid else (BULLISH_COLOR if f.direction == "bullish" else BEARISH_COLOR),
+        lambda f: FVG_INVALID_FILL if not f.valid else (FVG_BULLISH_FILL if f.direction == "bullish" else FVG_BEARISH_FILL),
         0, "solid",
-        lambda f: f"FVG ({f.direction}){' -- invalid' if not f.valid else ''}",
+        lambda f: f"FVG ({f.direction}){' — invalid (wrong side of premium/discount)' if not f.valid else ''}",
     )
 
     _add(
         "OrderBlock", poi_result.get("order_blocks", []), lambda o: o.index,
-        lambda o: OB_BULLISH_BORDER if o.direction == "bullish" else OB_BEARISH_BORDER,
-        lambda o: "rgba(0,0,0,0)", 1, "solid",
-        lambda o: f"OrderBlock ({o.direction})",
+        lambda o: BULLISH_COLOR if o.direction == "bullish" else BEARISH_COLOR,
+        lambda o: "rgba(0,0,0,0)", 1.2, "solid",
+        lambda o: f"Order Block ({o.direction})",
     )
 
     _add(
         "ExtremeOB", poi_result.get("extreme_order_blocks", []), lambda o: o.index,
-        lambda o: EOB_BULLISH_BORDER if o.direction == "bullish" else EOB_BEARISH_BORDER,
-        lambda o: "rgba(0,0,0,0)", 1.5, "longdash",
-        lambda o: f"ExtremeOB ({o.direction})",
+        lambda o: BULLISH_COLOR if o.direction == "bullish" else BEARISH_COLOR,
+        lambda o: "rgba(0,0,0,0)", 2.2, "solid",
+        lambda o: f"★ Extreme OB ({o.direction}) — high-confidence zone",
     )
 
     _add(
         "MitigationBlock", poi_result.get("mitigation_blocks", []), lambda m: m.index,
-        lambda m: MB_BORDER, lambda m: "rgba(0,0,0,0)", 1, "dot",
-        lambda m: f"MitigationBlock ({m.direction})",
+        lambda m: MB_COLOR, lambda m: "rgba(0,0,0,0)", 1, "dot",
+        lambda m: f"Mitigation Block ({m.direction})",
     )
 
     _add(
         "BreakerBlock", poi_result.get("breaker_blocks", []), lambda b: b.index,
-        lambda b: BRK_BULLISH_BORDER if b.direction == "bullish" else BRK_BEARISH_BORDER,
-        lambda b: "rgba(0,0,0,0)", 1, "dashdot",
-        lambda b: f"BreakerBlock ({b.direction})",
+        lambda b: BULLISH_COLOR if b.direction == "bullish" else BEARISH_COLOR,
+        lambda b: "rgba(0,0,0,0)", 1.4, "dashdot",
+        lambda b: f"Breaker Block ({b.direction})",
     )
+
+
+def _add_liquidity_lines(fig: go.Figure, x, swings: list, visible: dict) -> None:
+    """
+    BSL (Buy-Side Liquidity) / SSL (Sell-Side Liquidity): the most
+    recent swing high / swing low, relabeled with the SMC terms for
+    what they represent -- resting stops/orders above the last swing
+    high, and below the last swing low. NOT a new detector: reuses
+    whichever swings analyze_structure() already found. Deliberately a
+    simplification (the single most recent of each kind, not filtered
+    for "still structurally unbroken") -- good enough as a reference
+    line, not a claim of precise liquidity-pool tracking.
+    """
+    highs = [s for s in swings if s.kind == "high"]
+    lows = [s for s in swings if s.kind == "low"]
+    is_visible = True if visible.get("Liquidity", True) else "legendonly"
+    n = len(x)
+
+    if highs:
+        last_high = max(highs, key=lambda s: s.index)
+        x1 = x[min(last_high.index + max(1, (n - last_high.index) // 3), n - 1)]
+        fig.add_trace(go.Scatter(
+            x=[x[last_high.index], x1], y=[last_high.price, last_high.price],
+            mode="lines", line=dict(color=LIQUIDITY_COLOR, width=1, dash="dot"),
+            name="Liquidity", legendgroup="Liquidity", showlegend=True, visible=is_visible,
+            hoverinfo="text", hovertext=f"BSL (buy-side liquidity) {last_high.price:.2f}",
+        ))
+    if lows:
+        last_low = max(lows, key=lambda s: s.index)
+        x1 = x[min(last_low.index + max(1, (n - last_low.index) // 3), n - 1)]
+        fig.add_trace(go.Scatter(
+            x=[x[last_low.index], x1], y=[last_low.price, last_low.price],
+            mode="lines", line=dict(color=LIQUIDITY_COLOR, width=1, dash="dot"),
+            name="Liquidity", legendgroup="Liquidity", showlegend=False, visible=is_visible,
+            hoverinfo="text", hovertext=f"SSL (sell-side liquidity) {last_low.price:.2f}",
+        ))
+
+
+def _add_trade_setup(fig: go.Figure, x, trade_setup: dict) -> None:
+    """
+    Overlays an entry/stop/target preview: shaded risk region (entry to
+    stop) and reward region (entry to target), plus three labeled
+    lines. trade_setup: {"entry": float, "stop": float, "target": float,
+    "direction": "bullish"|"bearish"} -- e.g. from screener.ScreenerResult
+    or a backtester.Trade. Purely a display of numbers already computed
+    elsewhere; this function invents no prices.
+    """
+    entry, stop, target = trade_setup["entry"], trade_setup["stop"], trade_setup["target"]
+    x0, x1 = x[0], x[-1]
+
+    risk_fill = "rgba(239,68,68,0.08)"
+    reward_fill = "rgba(34,197,94,0.08)"
+
+    fig.add_trace(go.Scatter(
+        x=[x0, x1, x1, x0, x0], y=[entry, entry, stop, stop, entry],
+        mode="none", fill="toself", fillcolor=risk_fill,
+        name="Risk", legendgroup="TradeSetup", showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[x0, x1, x1, x0, x0], y=[entry, entry, target, target, entry],
+        mode="none", fill="toself", fillcolor=reward_fill,
+        name="Reward", legendgroup="TradeSetup", showlegend=False, hoverinfo="skip",
+    ))
+
+    for label, price, color, dash in (
+        ("Target", target, BULLISH_COLOR, "dash"),
+        ("Entry", entry, ACCENT, "solid"),
+        ("Stop", stop, BEARISH_COLOR, "dash"),
+    ):
+        fig.add_trace(go.Scatter(
+            x=[x0, x1], y=[price, price], mode="lines",
+            line=dict(color=color, width=1.4, dash=dash),
+            name="Trade Setup", legendgroup="TradeSetup", showlegend=(label == "Entry"),
+            hoverinfo="text", hovertext=f"{label}: {price:.2f}",
+        ))
+        fig.add_annotation(
+            x=x1, y=price, text=f" {label} {price:.2f}", showarrow=False,
+            xanchor="left", font=dict(size=10, color=color, family=FONT_FAMILY),
+        )
 
 
 def plot_structure(
@@ -165,6 +316,9 @@ def plot_structure(
     poi_max_extend: int = 40,
     dark_theme: bool = True,
     visible: dict | None = None,
+    show_liquidity: bool = False,
+    trade_setup: dict | None = None,
+    height: int = 700,
 ) -> go.Figure:
     """
     df:     the same OHLCV DataFrame passed into analyze_structure()
@@ -172,20 +326,19 @@ def plot_structure(
             (keys: swings, events, current_bias, last_event, ...)
     visible: optional {category: bool} controlling which categories are
         shown by default -- "Swings", "BOS", "CHoCH", "IDM", "FVG",
-        "OrderBlock", "ExtremeOB", "MitigationBlock", "BreakerBlock".
-        Every category defaults to True (visible) if omitted; setting
-        one to False draws it hidden but still toggleable from the
-        legend (it isn't removed, just starts unchecked).
+        "OrderBlock", "ExtremeOB", "MitigationBlock", "BreakerBlock",
+        "Liquidity". Every category defaults to True (visible) if
+        omitted; setting one to False draws it hidden but still
+        toggleable from the legend (it isn't removed, just unchecked).
+    show_liquidity: draw BSL/SSL reference lines (see _add_liquidity_lines).
+    trade_setup: optional {"entry", "stop", "target", "direction"} to
+        overlay a live trade preview (see _add_trade_setup).
 
     Returns a plotly Figure -- call .show() locally, or in Streamlit
     use st.plotly_chart(fig, use_container_width=True). Every category
     is independently toggleable by clicking its legend entry.
     """
     visible = visible or {}
-
-    def _vis(category: str):
-        return True if visible.get(category, True) else "legendonly"
-
     x = df.index
 
     fig = go.Figure(
@@ -193,10 +346,9 @@ def plot_structure(
             go.Candlestick(
                 x=x,
                 open=df["open"], high=df["high"], low=df["low"], close=df["close"],
-                increasing_line_color=BULLISH_COLOR,
-                decreasing_line_color=BEARISH_COLOR,
-                increasing_fillcolor=BULLISH_COLOR,
-                decreasing_fillcolor=BEARISH_COLOR,
+                increasing_line_color=BULLISH_COLOR, decreasing_line_color=BEARISH_COLOR,
+                increasing_fillcolor=BULLISH_COLOR, decreasing_fillcolor=BEARISH_COLOR,
+                increasing_line_width=1, decreasing_line_width=1,
                 name="price", showlegend=False,
             )
         ]
@@ -205,26 +357,30 @@ def plot_structure(
     if show_swing_markers:
         swing_highs = [s for s in result["swings"] if s.kind == "high"]
         swing_lows = [s for s in result["swings"] if s.kind == "low"]
+        vis = True if visible.get("Swings", True) else "legendonly"
         fig.add_trace(go.Scatter(
             x=[x[s.index] for s in swing_highs], y=[s.price for s in swing_highs],
-            mode="markers", marker=dict(symbol="circle", size=5, color="rgba(255,193,7,0.85)",
-                                          line=dict(width=1, color="rgba(255,193,7,1)")),
-            name="Swings", legendgroup="Swings", showlegend=True, visible=_vis("Swings"),
+            mode="markers", marker=dict(symbol="circle", size=4.5, color=TEXT_MUTED,
+                                          line=dict(width=1, color=TEXT_SECONDARY)),
+            name="Swings", legendgroup="Swings", showlegend=True, visible=vis,
             hoverinfo="text", hovertext="swing high",
         ))
         fig.add_trace(go.Scatter(
             x=[x[s.index] for s in swing_lows], y=[s.price for s in swing_lows],
-            mode="markers", marker=dict(symbol="circle", size=5, color="rgba(255,193,7,0.85)",
-                                          line=dict(width=1, color="rgba(255,193,7,1)")),
-            name="Swings", legendgroup="Swings", showlegend=False, visible=_vis("Swings"),
+            mode="markers", marker=dict(symbol="circle", size=4.5, color=TEXT_MUTED,
+                                          line=dict(width=1, color=TEXT_SECONDARY)),
+            name="Swings", legendgroup="Swings", showlegend=False, visible=vis,
             hoverinfo="text", hovertext="swing low",
         ))
 
+    if show_liquidity:
+        _add_liquidity_lines(fig, x, result["swings"], visible)
+
     # Each event is drawn the way a trader actually marks it on a real
-    # SMC chart (per reference screenshot): a HORIZONTAL line held at
-    # the swing point's price level, running flat from the swing
-    # candle across to the candle that broke/swept it, then a short
-    # vertical "elbow" dropping down to the actual break price.
+    # SMC chart: a HORIZONTAL line held at the swing point's price
+    # level, running flat from the swing candle across to the candle
+    # that broke/swept it, then a short vertical "elbow" dropping down
+    # to the actual break price.
     event_group_seen = set()
     for event in result["events"]:
         if event.source_swing_index is None:
@@ -238,34 +394,30 @@ def plot_structure(
         group = event.event_type
         first = group not in event_group_seen
         event_group_seen.add(group)
+        vis = True if visible.get(group, True) else "legendonly"
 
         fig.add_trace(go.Scatter(
             x=[x0, x1], y=[level, level],
             mode="lines",
             line=dict(color=color, dash=style["dash"], width=style["width"]),
-            name=group, legendgroup=group, showlegend=first, visible=_vis(group),
+            name=group, legendgroup=group, showlegend=first, visible=vis,
             hoverinfo="text", hovertext=f"{event.event_type} ({event.direction})",
         ))
         fig.add_trace(go.Scatter(
             x=[x1, x1], y=[level, event.price],
             mode="lines",
             line=dict(color=color, dash=style["dash"], width=style["width"]),
-            name=group, legendgroup=group, showlegend=False, visible=_vis(group),
+            name=group, legendgroup=group, showlegend=False, visible=vis,
             hoverinfo="skip",
         ))
 
     if poi_result is not None:
         _add_poi_shapes(fig, x, poi_result, show_invalid_fvgs, poi_max_extend, visible=visible, seen_groups=set())
 
-    template = "plotly_dark" if dark_theme else "plotly_white"
-    fig.update_layout(
-        title=title,
-        template=template,
-        xaxis_rangeslider_visible=False,
-        height=650,
-        margin=dict(l=40, r=140, t=50, b=40),
-        legend=dict(groupclick="togglegroup", orientation="v", yanchor="top", y=1, xanchor="left", x=1.01),
-    )
+    if trade_setup is not None:
+        _add_trade_setup(fig, x, trade_setup)
+
+    fig.update_layout(**_base_layout(title, height, x_range=_default_visible_range(x)))
     return fig
 
 
@@ -278,6 +430,7 @@ def plot_multi_timeframe_zones(
     dark_theme: bool = True,
     visible: dict | None = None,
     max_extend: int = 60,
+    height: int = 700,
 ) -> go.Figure:
     """
     Plots the LTF (entry-timeframe) candlestick chart with HTF zones
@@ -305,10 +458,9 @@ def plot_multi_timeframe_zones(
             go.Candlestick(
                 x=x,
                 open=ltf_df["open"], high=ltf_df["high"], low=ltf_df["low"], close=ltf_df["close"],
-                increasing_line_color=BULLISH_COLOR,
-                decreasing_line_color=BEARISH_COLOR,
-                increasing_fillcolor=BULLISH_COLOR,
-                decreasing_fillcolor=BEARISH_COLOR,
+                increasing_line_color=BULLISH_COLOR, decreasing_line_color=BEARISH_COLOR,
+                increasing_fillcolor=BULLISH_COLOR, decreasing_fillcolor=BEARISH_COLOR,
+                increasing_line_width=1, decreasing_line_width=1,
                 name="price", showlegend=False,
             )
         ]
@@ -320,13 +472,14 @@ def plot_multi_timeframe_zones(
         fig.add_trace(go.Scatter(
             x=[x[s.index] for s in swing_highs] + [x[s.index] for s in swing_lows],
             y=[s.price for s in swing_highs] + [s.price for s in swing_lows],
-            mode="markers", marker=dict(symbol="circle", size=4, color="rgba(255,193,7,0.7)"),
+            mode="markers", marker=dict(symbol="circle", size=4, color=TEXT_MUTED),
             name="Swings", legendgroup="Swings", showlegend=True,
             visible=True if visible.get("Swings", True) else "legendonly",
             hoverinfo="skip",
         ))
 
     seen_groups = set()
+    drawn_x0s = []
     for zone in htf_zones:
         # A zone already mitigated entirely before this LTF chart even
         # starts has nothing left to show here -- drawing it anyway
@@ -339,9 +492,9 @@ def plot_multi_timeframe_zones(
             continue
 
         group = f"{zone.timeframe.upper()} {zone.poi_type}"
-        color = HTF_TIMEFRAME_COLORS.get(zone.timeframe, "#9E9E9E")
+        color = HTF_TIMEFRAME_COLORS.get(zone.timeframe, TEXT_SECONDARY)
         if zone.poi_type == "FVG":
-            fill = "rgba(38,166,154,0.12)" if zone.direction == "bullish" else "rgba(239,83,80,0.12)"
+            fill = FVG_BULLISH_FILL if zone.direction == "bullish" else FVG_BEARISH_FILL
         else:
             fill = "rgba(0,0,0,0)"
 
@@ -359,24 +512,29 @@ def plot_multi_timeframe_zones(
 
         first = group not in seen_groups
         seen_groups.add(group)
+        drawn_x0s.append(x0)
         fig.add_trace(_zone_trace(
             x0, x1, zone.zone_low, zone.zone_high,
-            fillcolor=fill, line_color=color, line_width=1.5,
+            fillcolor=fill, line_color=color, line_width=1.6,
             dash="solid" if zone.poi_type in ("OrderBlock", "ExtremeOB") else ("dashdot" if zone.poi_type == "BreakerBlock" else "dot"),
             name=group, legendgroup=group, showlegend=first,
             hovertext=f"{group} ({zone.direction})",
         ))
         fig.data[-1].visible = True if visible.get(group, True) else "legendonly"
 
-    template = "plotly_dark" if dark_theme else "plotly_white"
-    fig.update_layout(
-        title=title,
-        template=template,
-        xaxis_rangeslider_visible=False,
-        height=650,
-        margin=dict(l=40, r=160, t=50, b=40),
-        legend=dict(groupclick="togglegroup", orientation="v", yanchor="top", y=1, xanchor="left", x=1.01),
-    )
+    # Unlike a plain price chart, the whole point here is showing zones
+    # relative to price -- default to a window wide enough to include
+    # the earliest still-drawn zone, not just the most recent candles,
+    # but still capped so it doesn't regress to the "thousands of
+    # unreadable candles" problem on a long LTF history.
+    if drawn_x0s:
+        earliest_zone_pos = min(x.searchsorted(min(drawn_x0s)), n - 1)
+        window_start = max(0, earliest_zone_pos - 10, n - 500)
+        x_range = [x[window_start], x[-1]]
+    else:
+        x_range = _default_visible_range(x)
+
+    fig.update_layout(**_base_layout(title, height, x_range=x_range))
     return fig
 
 
@@ -394,7 +552,7 @@ if __name__ == "__main__":
     result = analyze_structure(df, lookback=3)
     poi_result = analyze_poi(df, result["swings"], result["events"])
 
-    fig = plot_structure(df, result, poi_result=poi_result, title="Structure + POI Chart (synthetic test data)")
+    fig = plot_structure(df, result, poi_result=poi_result, title="Structure + POI Chart (synthetic test data)", show_liquidity=True)
     out_path = Path(__file__).resolve().parents[1] / "data" / "structure_chart_preview.png"
     fig.write_image(str(out_path), width=1600, height=700, scale=2)
     print(f"Saved preview to {out_path}")

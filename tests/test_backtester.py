@@ -22,6 +22,8 @@ from backtester import (  # noqa: E402
     backtest_po3_setups,
     run_extended_backtest,
     summarize_trades,
+    compute_equity_curve,
+    compute_max_drawdown,
     _simulate_trade,
 )
 
@@ -302,6 +304,71 @@ def test_summarize_trades_groups_by_source_type():
     print("PASS: summarize_trades groups independently by source_type")
 
 
+def test_profit_factor_computed_from_gross_win_loss_r():
+    trades = [
+        Trade("OrderBlock", "bullish", 0, 100, 95, 110, Outcome.WIN, 3, 2.0),
+        Trade("OrderBlock", "bullish", 5, 100, 95, 110, Outcome.WIN, 8, 2.0),
+        Trade("OrderBlock", "bullish", 10, 100, 95, 110, Outcome.LOSS, 12, -1.0),
+    ]
+    stats = summarize_trades(trades)
+    assert stats["OrderBlock"].profit_factor == 4.0  # (2.0+2.0) / 1.0
+    print("PASS: profit_factor is gross R won / gross R lost")
+
+
+def test_profit_factor_none_when_no_losses():
+    trades = [Trade("OrderBlock", "bullish", 0, 100, 95, 110, Outcome.WIN, 3, 2.0)]
+    stats = summarize_trades(trades)
+    assert stats["OrderBlock"].profit_factor is None
+    print("PASS: profit_factor is None (undefined), not infinite, when there are no losses")
+
+
+# ---------------------------------------------------------------------------
+# compute_equity_curve / compute_max_drawdown
+# ---------------------------------------------------------------------------
+
+def test_equity_curve_orders_by_entry_index_and_accumulates():
+    trades = [
+        Trade("OrderBlock", "bullish", 10, 100, 95, 110, Outcome.LOSS, 12, -1.0),
+        Trade("OrderBlock", "bullish", 0, 100, 95, 110, Outcome.WIN, 3, 2.0),
+        Trade("OrderBlock", "bullish", 5, 100, 95, 110, Outcome.WIN, 8, 2.0),
+    ]
+    curve = compute_equity_curve(trades)
+    assert curve == [(0, 2.0), (5, 4.0), (10, 3.0)]
+    print("PASS: equity curve orders by entry_index (not list order) and accumulates R")
+
+
+def test_equity_curve_empty_for_no_trades():
+    assert compute_equity_curve([]) == []
+    print("PASS: equity curve is empty for an empty trade list")
+
+
+def test_max_drawdown_measures_peak_to_trough():
+    # equity path: +2, +4 (peak), +3, +1, +2 -- max drawdown is 4->1 = 3.0
+    trades = [
+        Trade("X", "bullish", 0, 100, 95, 110, Outcome.WIN, 1, 2.0),
+        Trade("X", "bullish", 1, 100, 95, 110, Outcome.WIN, 2, 2.0),
+        Trade("X", "bullish", 2, 100, 95, 110, Outcome.LOSS, 3, -1.0),
+        Trade("X", "bullish", 3, 100, 95, 110, Outcome.LOSS, 4, -2.0),
+        Trade("X", "bullish", 4, 100, 95, 110, Outcome.WIN, 5, 1.0),
+    ]
+    assert compute_max_drawdown(trades) == 3.0
+    print("PASS: max_drawdown finds the largest peak-to-trough drop in the equity curve")
+
+
+def test_max_drawdown_zero_when_never_below_peak():
+    trades = [
+        Trade("X", "bullish", 0, 100, 95, 110, Outcome.WIN, 1, 2.0),
+        Trade("X", "bullish", 1, 100, 95, 110, Outcome.WIN, 2, 2.0),
+    ]
+    assert compute_max_drawdown(trades) == 0.0
+    print("PASS: max_drawdown is 0.0 when equity never falls below a prior peak")
+
+
+def test_max_drawdown_empty_trades():
+    assert compute_max_drawdown([]) == 0.0
+    print("PASS: max_drawdown is 0.0 for an empty trade list")
+
+
 if __name__ == "__main__":
     test_simulate_trade_win_when_target_hit_first()
     test_simulate_trade_loss_when_stop_hit_first()
@@ -319,4 +386,11 @@ if __name__ == "__main__":
     test_run_extended_backtest_includes_swing_poi_and_po3_labels()
     test_summarize_trades_computes_win_rate_and_expectancy()
     test_summarize_trades_groups_by_source_type()
+    test_profit_factor_computed_from_gross_win_loss_r()
+    test_profit_factor_none_when_no_losses()
+    test_equity_curve_orders_by_entry_index_and_accumulates()
+    test_equity_curve_empty_for_no_trades()
+    test_max_drawdown_measures_peak_to_trough()
+    test_max_drawdown_zero_when_never_below_peak()
+    test_max_drawdown_empty_trades()
     print("\nAll backtester tests passed.")
