@@ -71,6 +71,15 @@ NIFTY_50 = [
 STRUCTURE_TIMEFRAMES = [tf for tf in TIMEFRAME_ORDER if tf != "1min"]
 LAYER_CATEGORIES = ["Swings", "BOS", "CHoCH", "IDM", "FVG", "OrderBlock", "ExtremeOB", "MitigationBlock", "BreakerBlock"]
 DEFAULT_LAYERS_ON = {"Swings", "CHoCH", "FVG", "OrderBlock", "ExtremeOB"}
+# Full, spaced-out display names -- "MitigationBlock" as a checkbox
+# label wraps mid-word ("MitigationBlo/ck"); the underlying dict KEYS
+# stay identical to chart.py's legendgroup names, only the on-screen
+# label changes.
+LAYER_LABELS = {
+    "Swings": "Swings", "BOS": "BOS", "CHoCH": "CHoCH", "IDM": "IDM", "FVG": "FVG",
+    "OrderBlock": "Order Block", "ExtremeOB": "Extreme OB",
+    "MitigationBlock": "Mitigation Block", "BreakerBlock": "Breaker Block",
+}
 
 NAV_ITEMS = [("screener", "Screener"), ("analyze", "Analyze"), ("topdown", "Top-Down"), ("backtest", "Backtest")]
 
@@ -121,31 +130,38 @@ def inject_css() -> None:
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         html, body, [class*="css"] {{ font-family: {FONT_FAMILY}; }}
 
-        .block-container {{ padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1480px; }}
+        /* Streamlit's own native header bar is position:absolute, z-index
+           999990, 60px tall, with a near-black background almost
+           identical to ours -- without enough top padding it renders ON
+           TOP of our custom header and completely masks it (confirmed
+           directly: .app-header existed with correct computed styles but
+           was invisible until this was fixed). 68px clears it. */
+        .block-container {{ padding-top: 68px; padding-bottom: 1.5rem; max-width: 1520px; }}
         footer, #MainMenu {{ visibility: hidden; }}
+        div[data-testid="stVerticalBlock"] {{ gap: 0.4rem; }}
 
-        /* ---- header ---- */
+        /* ---- header (target ~52px) ---- */
         .app-header {{
             display: flex; justify-content: space-between; align-items: center;
-            padding: 14px 20px; border-radius: 10px;
+            padding: 8px 18px; border-radius: 8px;
             background: {BG_CARD}; border: 1px solid {BORDER};
-            margin-bottom: 18px;
+            margin-bottom: 8px;
         }}
-        .app-header-left {{ display: flex; align-items: baseline; gap: 10px; }}
-        .app-logo {{ font-size: 1.15rem; font-weight: 800; letter-spacing: 0.04em; color: {ACCENT}; }}
-        .app-tagline {{ font-size: 0.82rem; color: {TEXT_SECONDARY}; }}
-        .app-header-right {{ display: flex; align-items: center; gap: 8px; }}
+        .app-header-left {{ display: flex; align-items: baseline; gap: 9px; }}
+        .app-logo {{ font-size: 1.02rem; font-weight: 800; letter-spacing: 0.04em; color: {ACCENT}; }}
+        .app-tagline {{ font-size: 0.76rem; color: {TEXT_SECONDARY}; }}
+        .app-header-right {{ display: flex; align-items: center; gap: 6px; }}
 
         .pill {{
-            display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem;
+            display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.68rem;
             font-weight: 600; letter-spacing: 0.02em; color: {TEXT_SECONDARY};
-            border: 1px solid {BORDER}; background: rgba(255,255,255,0.02);
+            border: 1px solid {BORDER}; background: rgba(255,255,255,0.02); white-space: nowrap;
         }}
 
-        /* ---- nav ---- */
+        /* ---- nav: compact segmented bar, ~40px ---- */
         div[data-testid="stButton"] button {{
-            border-radius: 8px; font-weight: 600; font-size: 0.85rem;
-            transition: all 0.15s ease;
+            border-radius: 7px; font-weight: 600; font-size: 0.82rem;
+            transition: all 0.12s ease; padding: 0.28rem 0.8rem; min-height: 38px; height: 38px;
         }}
         div[data-testid="stButton"] button[kind="secondary"] {{
             background: transparent; border: 1px solid {BORDER}; color: {TEXT_SECONDARY};
@@ -153,26 +169,30 @@ def inject_css() -> None:
         div[data-testid="stButton"] button[kind="secondary"]:hover {{
             border-color: {ACCENT}; color: {ACCENT};
         }}
+        div[data-testid="stButton"] button[kind="primary"] {{
+            box-shadow: 0 0 0 1px rgba(33,212,180,0.5), 0 0 14px rgba(33,212,180,0.25);
+        }}
 
         /* ---- section headers ---- */
-        .section-title {{ font-size: 1.15rem; font-weight: 700; margin: 4px 0 2px 0; color: #F5F7FA; }}
-        .section-sub {{ color: {TEXT_SECONDARY}; font-size: 0.85rem; margin-bottom: 14px; }}
+        .section-title {{ font-size: 1.02rem; font-weight: 700; margin: 2px 0 0 0; color: #F5F7FA; }}
+        .section-sub {{ color: {TEXT_SECONDARY}; font-size: 0.8rem; margin-bottom: 8px; }}
 
-        /* ---- KPI cards ---- */
+        /* ---- KPI cards: compact, ~64px ---- */
         .kpi-card {{
-            border-radius: 10px; border: 1px solid {BORDER}; background: {BG_CARD};
-            padding: 14px 16px; height: 100%;
+            border-radius: 8px; border: 1px solid {BORDER}; background: {BG_CARD};
+            padding: 7px 14px; height: 100%;
         }}
-        .kpi-label {{ color: {TEXT_SECONDARY}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; }}
-        .kpi-value {{ font-size: 1.9rem; font-weight: 800; color: #F5F7FA; line-height: 1.25; margin-top: 2px; }}
+        .kpi-label {{ color: {TEXT_SECONDARY}; font-size: 0.66rem; font-weight: 600; letter-spacing: 0.05em; }}
+        .kpi-row {{ display: flex; align-items: baseline; gap: 7px; margin-top: 1px; }}
+        .kpi-value {{ font-size: 1.3rem; font-weight: 800; color: #F5F7FA; line-height: 1.15; }}
         .kpi-value.accent {{ color: {ACCENT}; }}
-        .kpi-tag {{ color: {TEXT_MUTED}; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; margin-top: -4px; }}
-        .kpi-detail {{ color: {TEXT_SECONDARY}; font-size: 0.78rem; margin-top: 6px; }}
+        .kpi-sub {{ color: {TEXT_MUTED}; font-size: 0.7rem; font-weight: 600; }}
+        .kpi-detail {{ color: {TEXT_SECONDARY}; font-size: 0.72rem; margin-top: 1px; }}
 
         /* ---- badges ---- */
         .badge {{
-            display: inline-block; padding: 2px 9px; border-radius: 6px;
-            font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+            display: inline-block; padding: 1px 8px; border-radius: 6px;
+            font-size: 0.68rem; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
         }}
         .badge-bull {{ background: rgba(34,197,94,0.14); color: {BULLISH_COLOR}; border: 1px solid rgba(34,197,94,0.35); }}
         .badge-bear {{ background: rgba(239,68,68,0.14); color: {BEARISH_COLOR}; border: 1px solid rgba(239,68,68,0.35); }}
@@ -180,13 +200,31 @@ def inject_css() -> None:
         .badge-setup {{ background: rgba(148,163,184,0.12); color: {TEXT_SECONDARY}; border: 1px solid {BORDER}; }}
         .badge-muted {{ background: rgba(148,163,184,0.08); color: {TEXT_MUTED}; border: 1px solid {BORDER}; }}
 
-        /* ---- info / summary cards ---- */
+        /* ---- info / summary cards (compact) ---- */
         .info-card {{
-            border-radius: 10px; border: 1px solid {BORDER}; background: {BG_CARD};
-            padding: 10px 14px;
+            border-radius: 8px; border: 1px solid {BORDER}; background: {BG_CARD};
+            padding: 5px 12px;
         }}
-        .info-card .lbl {{ color: {TEXT_MUTED}; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }}
-        .info-card .val {{ color: #F5F7FA; font-size: 1.05rem; font-weight: 700; margin-top: 2px; }}
+        .info-card .lbl {{ color: {TEXT_MUTED}; font-size: 0.64rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }}
+        .info-card .val {{ color: #F5F7FA; font-size: 0.92rem; font-weight: 700; margin-top: 0px; }}
+
+        /* ---- data strip (no-card horizontal metrics bar) ---- */
+        .data-strip {{
+            display: flex; flex-wrap: nowrap; gap: 0; border: 1px solid {BORDER}; border-radius: 8px;
+            background: {BG_CARD}; overflow: hidden; margin: 4px 0;
+        }}
+        .data-strip .item {{
+            flex: 1; padding: 6px 14px; border-right: 1px solid {BORDER};
+        }}
+        .data-strip .item:last-child {{ border-right: none; }}
+        .data-strip .lbl {{ color: {TEXT_MUTED}; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.05em; }}
+        .data-strip .val {{ color: #F5F7FA; font-size: 0.88rem; font-weight: 700; font-variant-numeric: tabular-nums; }}
+
+        /* ---- ticker header ---- */
+        .ticker-name {{ font-size: 1.35rem; font-weight: 800; color: #F5F7FA; }}
+        .ticker-company {{ font-size: 0.76rem; color: {TEXT_SECONDARY}; margin-top: -2px; }}
+        .ticker-price {{ font-size: 1.35rem; font-weight: 800; color: #F5F7FA; }}
+        .ticker-change {{ font-size: 0.86rem; font-weight: 700; }}
 
         /* ---- table rows ---- */
         .row-card {{
@@ -200,7 +238,12 @@ def inject_css() -> None:
         .cell-secondary {{ color: {TEXT_SECONDARY}; font-size: 0.78rem; }}
         .cell-mono {{ color: #F5F7FA; font-size: 0.86rem; font-variant-numeric: tabular-nums; }}
 
+        /* ---- layer toggle checkboxes: full names, never wrap mid-word ---- */
+        div[data-testid="stCheckbox"] {{ margin-top: -4px; margin-bottom: -4px; }}
+        div[data-testid="stCheckbox"] label p {{ white-space: nowrap; font-size: 0.82rem; }}
+
         div[data-testid="stExpander"] {{ border: 1px solid {BORDER}; border-radius: 10px; background: {BG_CARD}; }}
+        hr {{ margin: 0.5rem 0; border-color: {BORDER}; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -235,15 +278,14 @@ def render_header() -> None:
 
 def render_nav() -> None:
     st.session_state.setdefault("page", "screener")
-    cols = st.columns(len(NAV_ITEMS))
-    for col, (key, label) in zip(cols, NAV_ITEMS):
+    nav_cols = st.columns([1, 1, 1, 1, 5], gap="small")
+    for col, (key, label) in zip(nav_cols, NAV_ITEMS):
         with col:
             active = st.session_state["page"] == key
             if st.button(label, key=f"nav_{key}", use_container_width=True,
                          type="primary" if active else "secondary"):
                 st.session_state["page"] = key
                 st.rerun()
-    st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
 
 
 def render_proof_strip() -> None:
@@ -254,10 +296,8 @@ def render_proof_strip() -> None:
                 f"""
                 <div class="kpi-card">
                     <div class="kpi-label">{sig['name']}</div>
-                    <div class="kpi-value accent">{sig['win_rate']:.1f}%</div>
-                    <div class="kpi-tag">WIN RATE</div>
-                    <div class="kpi-detail">+{sig['expectancy']:.2f}R avg expectancy</div>
-                    <div class="kpi-detail">{sig['consistency']}</div>
+                    <div class="kpi-row"><span class="kpi-value accent">{sig['win_rate']:.1f}%</span><span class="kpi-sub">Win Rate</span></div>
+                    <div class="kpi-detail">+{sig['expectancy']:.2f}R expectancy · {sig['consistency']}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -267,15 +307,12 @@ def render_proof_strip() -> None:
             """
             <div class="kpi-card">
                 <div class="kpi-label">BACKTEST COVERAGE</div>
-                <div class="kpi-value">NIFTY 50</div>
-                <div class="kpi-tag">49 SYMBOLS</div>
-                <div class="kpi-detail">~3,000 pooled trades / signal</div>
-                <div class="kpi-detail">daily + 4H timeframes</div>
+                <div class="kpi-row"><span class="kpi-value">NIFTY 50</span><span class="kpi-sub">49 symbols</span></div>
+                <div class="kpi-detail">~3,000 trades/signal · daily + 4H</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-    st.caption("From the last full basket backtest (scripts/basket_backtest.py) — re-run it any time for fresh numbers.")
 
 
 # ---------------------------------------------------------------------------
@@ -404,21 +441,31 @@ def page_screener() -> None:
 # ---------------------------------------------------------------------------
 
 def page_analyze() -> None:
-    st.markdown('<div class="section-title">Analyze Ticker</div>', unsafe_allow_html=True)
-
     st.session_state.setdefault("analyze_ticker", "RELIANCE")
-    top_l, top_r = st.columns([2, 1])
-    with top_l:
-        ticker = st.text_input("Ticker", key="analyze_ticker")
-    with top_r:
-        timeframe = st.selectbox("Timeframe", STRUCTURE_TIMEFRAMES, index=STRUCTURE_TIMEFRAMES.index("daily"), key="analyze_timeframe")
 
-    layer_cols = st.columns(len(LAYER_CATEGORIES) + 1)
+    # --- Compact analysis toolbar: ticker + timeframe + Analyze ---
+    tb1, tb2, tb3 = st.columns([2.4, 1, 0.8])
+    with tb1:
+        ticker = st.text_input("Ticker", key="analyze_ticker", label_visibility="collapsed", placeholder="Ticker, e.g. RELIANCE")
+    with tb2:
+        timeframe = st.selectbox("Timeframe", STRUCTURE_TIMEFRAMES, index=STRUCTURE_TIMEFRAMES.index("daily"),
+                                  key="analyze_timeframe", label_visibility="collapsed")
+    with tb3:
+        st.button("Analyze", type="primary", use_container_width=True, key="analyze_go")
+
+    # --- Layer toggles: full names, two compact rows, never wrap mid-word ---
+    layer_row1 = st.columns(5)
+    layer_row2 = st.columns(5)
     visible = {}
-    for col, cat in zip(layer_cols, LAYER_CATEGORIES):
+    row1_items = ["Swings", "BOS", "CHoCH", "IDM", "FVG"]
+    row2_items = ["OrderBlock", "ExtremeOB", "MitigationBlock", "BreakerBlock"]
+    for col, cat in zip(layer_row1, row1_items):
         with col:
-            visible[cat] = st.checkbox(cat, value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
-    with layer_cols[-1]:
+            visible[cat] = st.checkbox(LAYER_LABELS[cat], value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
+    for col, cat in zip(layer_row2, row2_items):
+        with col:
+            visible[cat] = st.checkbox(LAYER_LABELS[cat], value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
+    with layer_row2[4]:
         show_liquidity = st.checkbox("Liquidity", value=False, key="layer_liquidity")
 
     if not ticker:
@@ -440,6 +487,8 @@ def page_analyze() -> None:
     change = current_price - prev_close
     change_pct = (change / prev_close * 100) if prev_close else 0.0
     atr = compute_atr(df)
+    profile, profile_err = cached_profile(ticker)
+    company_name = profile.info.get("longName") if (profile and not profile_err) else None
 
     bias = structure_result["current_bias"]
     fresh_zone = find_fresh_zone(poi_result, bias.value) if bias != Bias.UNDETERMINED else None
@@ -448,57 +497,57 @@ def page_analyze() -> None:
         entry_price, stop_price, target_price = preview_stop_target(fresh_zone, current_price, reward_r=2.0)
         trade_setup = {"entry": entry_price, "stop": stop_price, "target": target_price, "direction": fresh_zone.direction}
 
-    # --- Price header ---
+    # --- Ticker header: name + company, price + change, bias -- one compact row ---
     chg_color = BULLISH_COLOR if change >= 0 else BEARISH_COLOR
+    bias_kind = "bull" if bias == Bias.BULLISH else ("bear" if bias == Bias.BEARISH else "muted")
     st.markdown(
         f"""
-        <div style="display:flex; align-items:baseline; gap:14px; margin: 4px 0 6px 0;">
-            <span style="font-size:1.6rem; font-weight:800;">{ticker.upper()}</span>
-            <span style="font-size:1.6rem; font-weight:800;">₹{current_price:,.2f}</span>
-            <span style="color:{chg_color}; font-weight:700;">{change:+,.2f} ({change_pct:+.2f}%)</span>
+        <div style="display:flex; align-items:baseline; gap:16px; margin: 2px 0 4px 0; flex-wrap: wrap;">
+            <div>
+                <span class="ticker-name">{ticker.upper()}</span>
+                <div class="ticker-company">{company_name or '—'}</div>
+            </div>
+            <span class="ticker-price">₹{current_price:,.2f}</span>
+            <span class="ticker-change" style="color:{chg_color};">{change:+,.2f} ({change_pct:+.2f}%)</span>
+            {badge(bias.value.upper(), bias_kind)}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    info_cols = st.columns(6)
-    info_items = [
+    # --- Market data strip (single bar, not six cards) ---
+    strip_items = [
         ("OPEN", f"{df['open'].iloc[-1]:,.2f}"), ("HIGH", f"{df['high'].iloc[-1]:,.2f}"),
         ("LOW", f"{df['low'].iloc[-1]:,.2f}"), ("VOLUME", f"{df['volume'].iloc[-1]:,.0f}"),
-        ("ATR (14)", f"{atr:,.2f}" if atr else "n/a"), ("TREND", bias.value.upper()),
+        ("ATR (14)", f"{atr:,.2f}" if atr else "—"), ("TREND", bias.value.upper()),
     ]
-    for col, (lbl, val) in zip(info_cols, info_items):
-        col.markdown(f'<div class="info-card"><div class="lbl">{lbl}</div><div class="val">{val}</div></div>', unsafe_allow_html=True)
+    strip_html = "".join(f'<div class="item"><div class="lbl">{lbl}</div><div class="val">{val}</div></div>' for lbl, val in strip_items)
+    st.markdown(f'<div class="data-strip">{strip_html}</div>', unsafe_allow_html=True)
 
-    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-
-    # --- Signal summary cards ---
-    sig_cols = st.columns(4)
+    # --- Signal summary: one compact strip instead of four cards ---
     sig_items = [
         ("HTF BIAS", htf_bias.value.upper(), "bull" if htf_bias == Bias.BULLISH else ("bear" if htf_bias == Bias.BEARISH else "muted")),
-        ("STRUCTURE", bias.value.upper(), "bull" if bias == Bias.BULLISH else ("bear" if bias == Bias.BEARISH else "muted")),
-        ("ACTIVE SIGNAL", fresh_zone.poi_type if fresh_zone else "None", "strong" if fresh_zone else "muted"),
-        ("TIER", "HIGH" if fresh_zone else "N/A", "strong" if fresh_zone else "muted"),
+        ("STRUCTURE", bias.value.upper(), bias_kind),
+        ("ACTIVE SIGNAL", fresh_zone.poi_type if fresh_zone else "—", "strong" if fresh_zone else "muted"),
+        ("TIER", "HIGH" if fresh_zone else "—", "strong" if fresh_zone else "muted"),
     ]
-    for col, (lbl, val, kind) in zip(sig_cols, sig_items):
-        col.markdown(
-            f'<div class="info-card"><div class="lbl">{lbl}</div><div class="val">{badge(val, kind)}</div></div>',
-            unsafe_allow_html=True,
-        )
+    sig_html = "".join(
+        f'<div class="item"><div class="lbl">{lbl}</div><div class="val">{badge(val, kind)}</div></div>'
+        for lbl, val, kind in sig_items
+    )
+    st.markdown(f'<div class="data-strip">{sig_html}</div>', unsafe_allow_html=True)
 
-    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-
-    # --- Chart + side panel ---
-    chart_col, side_col = st.columns([3, 1])
+    # --- Chart (hero element) + side panel ---
+    chart_col, side_col = st.columns([3, 1], gap="small")
     with chart_col:
         fig = plot_structure(
-            df, structure_result, poi_result=poi_result, title=f"{ticker.upper()} — {timeframe}",
-            visible=visible, show_liquidity=show_liquidity, trade_setup=trade_setup, height=700,
+            df, structure_result, poi_result=poi_result, title=f"{ticker.upper()} · NSE · {timeframe}",
+            visible=visible, show_liquidity=show_liquidity, trade_setup=trade_setup, height=680,
         )
         st.plotly_chart(fig, use_container_width=True)
 
     with side_col:
-        st.markdown('<div class="section-sub" style="margin-bottom:6px;"><b>SMART MONEY ANALYSIS</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub" style="margin-bottom:4px;"><b>SMART MONEY ANALYSIS</b></div>', unsafe_allow_html=True)
 
         last_bos = next((e for e in reversed(structure_result["events"]) if e.event_type == "BOS"), None)
         last_choch = next((e for e in reversed(structure_result["events"]) if e.event_type == "CHoCH"), None)
@@ -506,28 +555,30 @@ def page_analyze() -> None:
         swing_lows = [s for s in structure_result["swings"] if s.kind == "low"]
 
         def line(lbl, val):
-            st.markdown(f'<div class="info-card" style="margin-bottom:6px;"><div class="lbl">{lbl}</div><div class="val" style="font-size:0.92rem;">{val}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="info-card" style="margin-bottom:5px;"><div class="lbl">{lbl}</div><div class="val" style="font-size:0.86rem;">{val}</div></div>', unsafe_allow_html=True)
 
-        line("Market Structure", badge(bias.value, "bull" if bias == Bias.BULLISH else ("bear" if bias == Bias.BEARISH else "muted")))
-        line("Latest BOS", f"{last_bos.direction} @ {last_bos.price:.2f}" if last_bos else "None")
-        line("Latest CHoCH", f"{last_choch.direction} @ {last_choch.price:.2f}" if last_choch else "None")
-        if fresh_zone:
-            line(fresh_zone.poi_type, f"{fresh_zone.zone_low:,.2f} – {fresh_zone.zone_high:,.2f}")
-        if swing_highs:
-            line("BSL (buy-side liquidity)", f"{max(swing_highs, key=lambda s: s.index).price:,.2f}")
-        if swing_lows:
-            line("SSL (sell-side liquidity)", f"{max(swing_lows, key=lambda s: s.index).price:,.2f}")
+        line("Market Structure", badge(bias.value, bias_kind))
+        line("Latest BOS", f"{last_bos.direction} @ {last_bos.price:.2f}" if last_bos else "—")
+        line("Latest CHoCH", f"{last_choch.direction} @ {last_choch.price:.2f}" if last_choch else "—")
+        line(fresh_zone.poi_type if fresh_zone else "Order Block", f"{fresh_zone.zone_low:,.2f} – {fresh_zone.zone_high:,.2f}" if fresh_zone else "—")
+        line("BSL (buy-side liquidity)", f"{max(swing_highs, key=lambda s: s.index).price:,.2f}" if swing_highs else "—")
+        line("SSL (sell-side liquidity)", f"{max(swing_lows, key=lambda s: s.index).price:,.2f}" if swing_lows else "—")
 
+        st.markdown('<div class="section-sub" style="margin: 8px 0 4px 0;"><b>TRADE SETUP</b></div>', unsafe_allow_html=True)
         if trade_setup:
-            st.markdown('<div class="section-sub" style="margin: 10px 0 6px 0;"><b>TRADE SETUP</b></div>', unsafe_allow_html=True)
             line("Direction", badge("LONG" if fresh_zone.direction == "bullish" else "SHORT", "bull" if fresh_zone.direction == "bullish" else "bear"))
             line("Entry", f"{trade_setup['entry']:,.2f}")
             line("Stop", f"{trade_setup['stop']:,.2f}")
             line("Target", f"{trade_setup['target']:,.2f}")
-            line("Risk / Reward", "2.0R (fixed, this project's backtest convention)")
+            line("Risk / Reward", "2.0R (this project's fixed backtest convention)")
+        else:
+            line("Direction", "—")
+            line("Entry", "—")
+            line("Stop", "—")
+            line("Target", "—")
 
     with st.expander("Company reference (all-time high, yearly stats, dividends)"):
-        profile, err = cached_profile(ticker)
+        err = profile_err
         if err:
             st.warning(f"Reference data unavailable: {err}")
         elif profile:
