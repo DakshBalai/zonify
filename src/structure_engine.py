@@ -92,32 +92,6 @@ def find_swing_points(df: pd.DataFrame, lookback: int = 3) -> list[SwingPoint]:
     return swings
 
 
-def classify_bias(swings: list[SwingPoint]) -> Bias:
-    """
-    Looks at the most recent two swing highs and two swing lows: higher
-    highs + higher lows = bullish structure; lower highs + lower lows =
-    bearish. Anything else (e.g. a higher high but a lower low) is
-    genuinely ambiguous structure, not a coin-flip -- reported as such
-    rather than forced into a direction.
-    """
-    recent_highs = [s for s in swings if s.kind == "high"][-2:]
-    recent_lows = [s for s in swings if s.kind == "low"][-2:]
-
-    if len(recent_highs) < 2 or len(recent_lows) < 2:
-        return Bias.UNDETERMINED
-
-    higher_highs = recent_highs[-1].price > recent_highs[-2].price
-    higher_lows = recent_lows[-1].price > recent_lows[-2].price
-    lower_highs = recent_highs[-1].price < recent_highs[-2].price
-    lower_lows = recent_lows[-1].price < recent_lows[-2].price
-
-    if higher_highs and higher_lows:
-        return Bias.BULLISH
-    if lower_highs and lower_lows:
-        return Bias.BEARISH
-    return Bias.UNDETERMINED
-
-
 def detect_structure_events(df: pd.DataFrame, swings: list[SwingPoint]) -> tuple[list[StructureEvent], "Bias"]:
     """
     Walks forward through the candles, tracking the prevailing bias and
