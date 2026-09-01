@@ -96,8 +96,25 @@ def _clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     Normalizes a raw yfinance DataFrame into the exact shape
     structure_engine.py expects: lowercase open/high/low/close/volume
     columns, a clean DatetimeIndex localized to NSE's timezone, sorted,
-    de-duplicated, and with any all-NaN rows (which yfinance sometimes
-    returns for the most recent, still-forming candle) dropped.
+    de-duplicated, with any all-NaN rows (which yfinance sometimes
+    returns for the most recent, still-forming candle) dropped, and
+    zero-volume placeholder rows dropped.
+
+    The zero-volume case is a real data quality issue, confirmed
+    directly: yfinance returns a row for every NSE trading-calendar
+    date even on days with no actual trade data for a given ticker
+    (exactly 5 such rows appeared identically across RELIANCE, TCS,
+    SBIN, HDFCBANK, and INFY over the same 2-year window -- almost
+    certainly the same handful of exchange holidays/feed gaps, not
+    ticker-specific illiquidity). These rows have volume=0 and
+    open=high=low=close all pinned to the prior close, which makes
+    them a ZERO-RANGE candle -- structurally meaningless, but not
+    harmless: this exact shape was caught producing a degenerate
+    zero-width Order Block (found the fresh Order Block on SBIN's
+    daily chart was a straight line, not a zone, tracing back to one
+    of these rows). A real trading day for a liquid NSE stock always
+    has nonzero volume, so filtering on volume==0 removes only these
+    placeholder rows, never a genuinely low-volume (but real) session.
     """
     df = _flatten_columns(df)
 
@@ -121,6 +138,8 @@ def _clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     df = df[~df.index.duplicated(keep="first")]
     df = df.sort_index()
     df = df.dropna(subset=["open", "high", "low", "close"])
+    if "volume" in df.columns:
+        df = df[df["volume"] != 0]
 
     return df
 

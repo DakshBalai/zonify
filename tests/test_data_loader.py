@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from data_loader import (  # noqa: E402
     NSE_TZ,
+    _clean_ohlcv,
     _flatten_columns,
     normalize_nse_ticker,
     resample_to_4h,
@@ -87,6 +88,42 @@ def test_flatten_columns():
     plain = pd.DataFrame(np.zeros((3, 2)), columns=["Open", "Close"])
     assert list(_flatten_columns(plain).columns) == ["Open", "Close"]
     print("PASS: _flatten_columns")
+
+
+def test_clean_ohlcv_drops_zero_volume_placeholder_rows():
+    # Confirmed directly against real yfinance data: NSE trading-
+    # calendar dates with no actual trade data still come back as a
+    # row -- volume=0, open=high=low=close all pinned to the prior
+    # close (a zero-range candle). Structurally meaningless and, left
+    # in, can produce a degenerate zero-width Order Block.
+    idx = pd.DatetimeIndex([
+        "2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04",
+    ])
+    df = pd.DataFrame({
+        "Open": [100.0, 101.0, 101.0, 103.0],
+        "High": [101.0, 101.0, 101.0, 104.0],
+        "Low": [99.0, 101.0, 101.0, 102.0],
+        "Close": [100.5, 101.0, 101.0, 103.5],
+        "Volume": [5000, 0, 6000, 7000],
+    }, index=idx)
+    cleaned = _clean_ohlcv(df)
+    assert len(cleaned) == 3
+    assert 0 not in cleaned["volume"].values
+    print("PASS: _clean_ohlcv drops zero-volume placeholder rows")
+
+
+def test_clean_ohlcv_keeps_low_but_nonzero_volume_rows():
+    # A genuinely thin trading day (nonzero volume) must NOT be
+    # dropped -- only the volume==0 placeholder case is data-quality
+    # noise, not "low volume" in general.
+    idx = pd.DatetimeIndex(["2024-01-01", "2024-01-02"])
+    df = pd.DataFrame({
+        "Open": [100.0, 101.0], "High": [101.0, 102.0], "Low": [99.0, 100.5],
+        "Close": [100.5, 101.5], "Volume": [5000, 3],
+    }, index=idx)
+    cleaned = _clean_ohlcv(df)
+    assert len(cleaned) == 2
+    print("PASS: _clean_ohlcv keeps a genuinely thin (nonzero-volume) trading day")
 
 
 def test_resample_bucket_count_and_boundaries():
@@ -162,6 +199,8 @@ def test_resample_handles_empty_input():
 if __name__ == "__main__":
     test_normalize_nse_ticker()
     test_flatten_columns()
+    test_clean_ohlcv_drops_zero_volume_placeholder_rows()
+    test_clean_ohlcv_keeps_low_but_nonzero_volume_rows()
     test_resample_bucket_count_and_boundaries()
     test_resample_ohlcv_aggregation_correctness()
     test_resample_no_data_leakage_across_days()
