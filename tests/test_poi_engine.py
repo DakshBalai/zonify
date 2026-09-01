@@ -17,10 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from structure_engine import SwingPoint, StructureEvent  # noqa: E402
 from poi_engine import (  # noqa: E402
+    OrderBlock,
     compute_dealing_range,
     find_fvgs,
     find_order_blocks,
     find_mitigation_blocks,
+    find_breaker_blocks,
     apply_mitigation,
 )
 
@@ -207,6 +209,123 @@ def test_mitigation_block_derived_from_idm_event():
 
 
 # ---------------------------------------------------------------------------
+# Breaker Blocks
+# ---------------------------------------------------------------------------
+
+def test_breaker_block_created_when_ob_far_edge_is_closed_through_for_two_bars():
+    # Bullish OB zone (9.5, 10.2) at index 0. Far edge for a bullish OB
+    # is zone_low=9.5. TWO consecutive closes below 9.5 (default
+    # confirm_bars=2) -> the OB fails and becomes a BEARISH breaker.
+    ob = OrderBlock(index=0, direction="bullish", zone_low=9.5, zone_high=10.2, source_event_index=3)
+    df = candles([
+        (10.0, 10.2, 9.5, 9.6),    # i=0, the OB candle itself
+        (9.6, 11.0, 9.6, 10.8),    # i=1
+        (10.8, 12.0, 10.5, 11.8),  # i=2
+        (11.8, 12.5, 11.5, 12.2),  # i=3, the BOS close candle
+        (12.2, 12.3, 9.0, 9.0),    # i=4, closes at 9.0 -- through the OB floor (9.5), 1st confirming close
+        (9.0, 9.1, 8.7, 8.8),      # i=5, still below 9.5 -- 2nd confirming close -> breaker confirmed here
+    ])
+    breakers = find_breaker_blocks(df, [ob])
+    assert len(breakers) == 1
+    b = breakers[0]
+    assert b.direction == "bearish", "a failed bullish OB must flip to a bearish breaker"
+    assert b.zone_low == 9.5 and b.zone_high == 10.2, "breaker keeps the OB's original zone"
+    assert b.index == 5, f"expected confirmation at index 5, got {b.index}"
+    assert b.source_order_block_index == 0
+    print("PASS: breaker block created and flipped after 2 consecutive confirming closes")
+
+
+def test_breaker_block_flips_bearish_ob_to_bullish():
+    # Bearish OB zone (10.0, 10.5); far edge = zone_high = 10.5. Two
+    # consecutive closes above 10.5 invalidate it -> flips BULLISH.
+    ob = OrderBlock(index=0, direction="bearish", zone_low=10.0, zone_high=10.5, source_event_index=2)
+    df = candles([
+        (10.4, 10.5, 10.0, 10.1),  # i=0, OB candle
+        (10.1, 10.2, 9.0, 9.2),    # i=1
+        (9.2, 9.3, 8.5, 8.7),      # i=2, CHoCH close candle
+        (8.7, 11.0, 8.6, 10.9),    # i=3, closes above 10.5 -- 1st confirming close
+        (10.9, 11.2, 10.8, 11.1),  # i=4, still above 10.5 -- 2nd confirming close
+    ])
+    breakers = find_breaker_blocks(df, [ob])
+    assert len(breakers) == 1
+    assert breakers[0].direction == "bullish"
+    assert breakers[0].index == 4
+    print("PASS: a failed bearish OB flips to a bullish breaker")
+
+
+def test_no_breaker_block_when_ob_is_never_invalidated():
+    # Price wicks into the zone (ordinary mitigation) but never CLOSES
+    # through the far edge -- no breaker should be created.
+    ob = OrderBlock(index=0, direction="bullish", zone_low=9.5, zone_high=10.2, source_event_index=1)
+    df = candles([
+        (10.0, 10.2, 9.5, 9.6),
+        (9.6, 11.0, 9.6, 10.8),
+        (10.8, 11.0, 9.4, 9.7),   # wicks to 9.4 (below zone_low) but closes at 9.7 (still inside)
+    ])
+    breakers = find_breaker_blocks(df, [ob])
+    assert breakers == []
+    print("PASS: no breaker block when the OB is only wicked into, never closed through")
+
+
+def test_breaker_block_rejects_single_bar_fakeout():
+    # A single close beyond the far edge, immediately reclaimed on the
+    # very next candle -- this is exactly the noisy wick-and-reclaim
+    # pattern confirmed against real NSE data (see find_breaker_blocks
+    # docstring). Must NOT produce a breaker with the confirm_bars=2
+    # default, since the "break" never actually held.
+    ob = OrderBlock(index=0, direction="bullish", zone_low=9.5, zone_high=10.2, source_event_index=1)
+    df = candles([
+        (10.0, 10.2, 9.5, 9.6),
+        (9.6, 9.7, 9.4, 9.5),
+        (9.5, 9.6, 9.0, 9.0),     # i=2, single close below 9.5 -- a fakeout
+        (9.0, 10.6, 9.0, 10.5),   # i=3, immediately reclaims back above the zone
+    ])
+    breakers = find_breaker_blocks(df, [ob])
+    assert breakers == [], "a single-candle close, immediately reclaimed, must not confirm a breaker"
+    print("PASS: a single-bar fakeout close does not confirm a breaker block")
+
+
+def test_breaker_block_confirm_bars_is_configurable():
+    # The same single-close fakeout DOES count as a breaker if the
+    # caller explicitly asks for confirm_bars=1 -- confirms the
+    # parameter is actually wired through, not hardcoded.
+    ob = OrderBlock(index=0, direction="bullish", zone_low=9.5, zone_high=10.2, source_event_index=1)
+    df = candles([
+        (10.0, 10.2, 9.5, 9.6),
+        (9.6, 9.7, 9.4, 9.5),
+        (9.5, 9.6, 9.0, 9.0),     # i=2, single close below 9.5
+        (9.0, 10.6, 9.0, 10.5),
+    ])
+    breakers = find_breaker_blocks(df, [ob], confirm_bars=1)
+    assert len(breakers) == 1
+    assert breakers[0].index == 2
+    print("PASS: confirm_bars is configurable and defaults to requiring more than 1 bar")
+
+
+def test_breaker_block_mitigation_tracks_from_confirmation_candle():
+    # After the breaker confirms at index 3 (2nd confirming close), a
+    # later candle trades back into the zone -- that's the breaker's own
+    # mitigation (the retest entry), tracked from the CONFIRMATION index
+    # forward, not from the original OB index.
+    ob = OrderBlock(index=0, direction="bullish", zone_low=9.5, zone_high=10.2, source_event_index=1)
+    df = candles([
+        (10.0, 10.2, 9.5, 9.6),
+        (9.6, 9.7, 9.4, 9.5),
+        (9.5, 9.6, 9.0, 9.0),     # i=2, 1st confirming close
+        (9.0, 9.2, 8.8, 8.9),     # i=3, 2nd confirming close -> breaker confirmed here
+        (8.9, 9.1, 8.7, 8.9),     # i=4, still below the zone
+        (8.9, 9.8, 8.8, 9.7),     # i=5, high=9.8 re-enters zone (9.5, 10.2) -> breaker mitigated here
+    ])
+    breakers = find_breaker_blocks(df, [ob])
+    apply_mitigation(df, breakers, formation_index_attr="index")
+    assert len(breakers) == 1
+    assert breakers[0].index == 3
+    assert breakers[0].mitigated is True
+    assert breakers[0].mitigated_index == 5
+    print("PASS: breaker block mitigation is tracked forward from its own confirmation candle")
+
+
+# ---------------------------------------------------------------------------
 # Mitigation tracking
 # ---------------------------------------------------------------------------
 
@@ -252,6 +371,12 @@ if __name__ == "__main__":
     test_order_block_finds_last_opposite_candle()
     test_order_block_skips_multiple_same_color_candles()
     test_mitigation_block_derived_from_idm_event()
+    test_breaker_block_created_when_ob_far_edge_is_closed_through_for_two_bars()
+    test_breaker_block_flips_bearish_ob_to_bullish()
+    test_no_breaker_block_when_ob_is_never_invalidated()
+    test_breaker_block_rejects_single_bar_fakeout()
+    test_breaker_block_confirm_bars_is_configurable()
+    test_breaker_block_mitigation_tracks_from_confirmation_candle()
     test_apply_mitigation_flags_first_touch()
     test_apply_mitigation_leaves_untouched_poi_unmitigated()
     print("\nAll poi_engine tests passed.")

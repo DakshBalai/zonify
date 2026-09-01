@@ -41,6 +41,8 @@ FVG_INVALID_COLOR = "rgba(150,150,150,0.10)"  # faint grey -- valid=False (wrong
 OB_BULLISH_BORDER = "#26A69A"
 OB_BEARISH_BORDER = "#EF5350"
 MB_BORDER = "#B39DDB"
+BRK_BULLISH_BORDER = "#FFA726"  # orange -- visually distinct from OB's teal/red so a flipped zone reads at a glance
+BRK_BEARISH_BORDER = "#FF7043"
 
 
 def _event_color(event) -> str:
@@ -113,6 +115,19 @@ def _add_poi_shapes(fig: go.Figure, x, poi_result: dict, show_invalid_fvgs: bool
         fig.add_annotation(
             x=x0, y=mb.zone_high, text="MB", showarrow=False,
             xanchor="left", yshift=6, font=dict(size=8, color=MB_BORDER),
+        )
+
+    for brk in poi_result.get("breaker_blocks", []):
+        x0 = x[brk.index]
+        x1 = _end_x(brk.index, brk.mitigated, brk.mitigated_index)
+        border = BRK_BULLISH_BORDER if brk.direction == "bullish" else BRK_BEARISH_BORDER
+        fig.add_shape(
+            type="rect", x0=x0, x1=x1, y0=brk.zone_low, y1=brk.zone_high,
+            fillcolor="rgba(0,0,0,0)", line=dict(color=border, width=1, dash="dashdot"), layer="below",
+        )
+        fig.add_annotation(
+            x=x0, y=brk.zone_high, text="BRK", showarrow=False,
+            xanchor="left", yshift=6, font=dict(size=8, color=border),
         )
 
 

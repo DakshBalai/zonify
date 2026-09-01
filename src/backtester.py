@@ -259,6 +259,7 @@ def run_backtest(
     if poi_result is not None:
         trades += backtest_pois(df, poi_result["order_blocks"], "OrderBlock", reward_r=reward_r, max_bars=max_bars)
         trades += backtest_pois(df, poi_result["mitigation_blocks"], "MitigationBlock", reward_r=reward_r, max_bars=max_bars)
+        trades += backtest_pois(df, poi_result.get("breaker_blocks", []), "BreakerBlock", reward_r=reward_r, max_bars=max_bars)
         valid_fvgs = [f for f in poi_result["fvgs"] if f.valid]
         trades += backtest_pois(df, valid_fvgs, "FVG", reward_r=reward_r, max_bars=max_bars)
 
