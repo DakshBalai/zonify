@@ -538,6 +538,409 @@ def plot_multi_timeframe_zones(
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Lightweight Charts (TradingView) renderer
+#
+# WHY THIS EXISTS ALONGSIDE THE PLOTLY FUNCTIONS ABOVE: inside Streamlit,
+# a Plotly figure is rendered server-side once per rerun -- there is no
+# live Python<->JS bridge, so a Plotly chart cannot dynamically refit its
+# price axis as the user scroll-zooms or drags the time axis (Plotly's
+# own y-autorange considers the FULL dataset, not the currently-visible
+# window, and there is no callback to recompute it client-side without a
+# custom component). That produced exactly the complaints checked
+# directly against a live rendered chart: compressed candles, huge empty
+# vertical space, no real scroll-to-zoom, no smooth drag-to-pan. Rather
+# than fight Plotly's architecture for something it isn't built for,
+# this renders TradingView's own Lightweight Charts library instead, via
+# a self-contained HTML+JS component (st.components.v1.html on the
+# caller's side) -- which handles auto-fit price scale, scroll-zoom,
+# drag-pan, and crosshair OHLC natively, with zero custom JS event
+# plumbing needed beyond initialization.
+#
+# This is presentation only: it consumes the exact same
+# analyze_structure()/analyze_poi()/HTFZone objects the Plotly path
+# does and invents no new zone, event, or price data.
+# ---------------------------------------------------------------------------
+
+import json as _json
+from string import Template as _Template
+
+
+def _unix_seconds(index) -> list[int]:
+    """DatetimeIndex -> list of UNIX seconds (Lightweight Charts' native time format)."""
+    return (index.astype("int64") // 1_000_000_000).tolist()
+
+
+def _candle_payload(df) -> tuple[list[dict], dict]:
+    times = _unix_seconds(df.index)
+    candles = [
+        {"time": t, "open": round(float(o), 4), "high": round(float(h), 4),
+         "low": round(float(l), 4), "close": round(float(c), 4)}
+        for t, o, h, l, c in zip(times, df["open"], df["high"], df["low"], df["close"])
+    ]
+    volumes = {t: float(v) for t, v in zip(times, df["volume"])}
+    return candles, volumes
+
+
+def _lwc_zone_payload(poi_result: dict, x_times: list, max_extend: int, visible: dict) -> list[dict]:
+    """Same zones _add_poi_shapes() draws, as JSON-serializable {t1,t2,p1,p2,color,fill,label} dicts."""
+    n = len(x_times)
+    zones = []
+
+    def end_time(formation_index, mitigated, mitigated_index):
+        if mitigated:
+            return x_times[mitigated_index]
+        return x_times[min(formation_index + max_extend, n - 1)]
+
+    def add(category, items, index_fn, color_fn, fill_fn, label_fn):
+        if not visible.get(category, True):
+            return
+        for poi in items:
+            idx = index_fn(poi)
+            zones.append({
+                "t1": x_times[idx], "t2": end_time(idx, poi.mitigated, poi.mitigated_index),
+                "p1": poi.zone_low, "p2": poi.zone_high,
+                "color": color_fn(poi), "fill": fill_fn(poi), "label": label_fn(poi),
+            })
+
+    valid_fvgs = [f for f in poi_result.get("fvgs", []) if f.valid]
+    add("FVG", valid_fvgs, lambda f: f.end_index,
+        lambda f: BULLISH_COLOR if f.direction == "bullish" else BEARISH_COLOR,
+        lambda f: FVG_BULLISH_FILL if f.direction == "bullish" else FVG_BEARISH_FILL,
+        lambda f: "FVG")
+    add("OrderBlock", poi_result.get("order_blocks", []), lambda o: o.index,
+        lambda o: BULLISH_COLOR if o.direction == "bullish" else BEARISH_COLOR,
+        lambda o: "rgba(34,197,94,0.10)" if o.direction == "bullish" else "rgba(239,68,68,0.10)",
+        lambda o: "OB")
+    add("ExtremeOB", poi_result.get("extreme_order_blocks", []), lambda o: o.index,
+        lambda o: BULLISH_COLOR if o.direction == "bullish" else BEARISH_COLOR,
+        lambda o: "rgba(34,197,94,0.16)" if o.direction == "bullish" else "rgba(239,68,68,0.16)",
+        lambda o: "★ Extreme OB")
+    add("MitigationBlock", poi_result.get("mitigation_blocks", []), lambda m: m.index,
+        lambda m: MB_COLOR, lambda m: "rgba(124,134,152,0.10)", lambda m: "MB")
+    add("BreakerBlock", poi_result.get("breaker_blocks", []), lambda b: b.index,
+        lambda b: BULLISH_COLOR if b.direction == "bullish" else BEARISH_COLOR,
+        lambda b: "rgba(34,197,94,0.10)" if b.direction == "bullish" else "rgba(239,68,68,0.10)",
+        lambda b: "Breaker")
+
+    return zones
+
+
+def _lwc_event_lines(events: list, visible: dict, max_per_type: int = 3) -> list[dict]:
+    """Price lines are full-width on Lightweight Charts (no time bounds), so
+    rendering every historical BOS/CHoCH/IDM ever detected floods the price
+    axis with stacked labels. Keep only the most recent few per event type --
+    the underlying `events` list (and detection logic) is untouched."""
+    by_type: dict[str, list] = {}
+    for event in events:
+        if event.source_swing_index is None or not visible.get(event.event_type, True):
+            continue
+        by_type.setdefault(event.event_type, []).append(event)
+
+    lines = []
+    for event_type, evs in by_type.items():
+        evs.sort(key=lambda e: e.index, reverse=True)
+        for event in evs[:max_per_type]:
+            color = IDM_COLOR if event.event_type == "IDM" else _event_color(event)
+            arrow = "↑" if event.direction == "bullish" else "↓"
+            lines.append({
+                "price": event.source_swing_price, "color": color,
+                "width": 2 if event.event_type == "CHoCH" else 1,
+                "style": 2 if event.event_type == "IDM" else 0,   # LightweightCharts.LineStyle: 0=Solid, 2=Dotted
+                "title": f"{event.event_type} {arrow}",
+            })
+    return lines
+
+
+def _lwc_liquidity_lines(swings: list, visible: dict) -> list[dict]:
+    if not visible.get("Liquidity", True):
+        return []
+    lines = []
+    highs = [s for s in swings if s.kind == "high"]
+    lows = [s for s in swings if s.kind == "low"]
+    if highs:
+        s = max(highs, key=lambda s: s.index)
+        lines.append({"price": s.price, "color": LIQUIDITY_COLOR, "title": "BSL"})
+    if lows:
+        s = max(lows, key=lambda s: s.index)
+        lines.append({"price": s.price, "color": LIQUIDITY_COLOR, "title": "SSL"})
+    return lines
+
+
+def _lwc_markers(swings: list, x_times: list, visible: dict) -> list[dict]:
+    if not visible.get("Swings", True):
+        return []
+    markers = [
+        {"time": x_times[s.index], "position": "aboveBar" if s.kind == "high" else "belowBar",
+         "color": TEXT_MUTED, "shape": "circle", "text": ""}
+        for s in swings
+    ]
+    markers.sort(key=lambda m: m["time"])
+    return markers
+
+
+_CHART_HTML = _Template(r"""
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  html, body { margin:0; padding:0; background:$bg_primary; overflow:hidden; }
+  #wrap { width:100%; height:${height}px; font-family:$font_family; }
+  #toolbar { display:flex; align-items:center; gap:6px; padding:6px 10px; background:$bg_card; border-bottom:1px solid $border; height:24px; }
+  #toolbar button { background:transparent; color:$text_secondary; border:1px solid $border; border-radius:6px;
+    font-size:11px; padding:3px 10px; cursor:pointer; font-family:$font_family; font-weight:600; }
+  #toolbar button:hover { border-color:$accent; color:$accent; }
+  #toolbar button.active { background:$accent; color:#06110D; border-color:$accent; }
+  #toolbar .label { color:$text_muted; font-size:10px; font-weight:700; letter-spacing:0.05em; margin-right:2px; }
+  #chart-container { width:100%; height:calc(${height}px - 38px); position:relative; }
+  #ohlc-info { position:absolute; top:8px; left:10px; z-index:5; font-size:11px; color:$text_secondary;
+    background:rgba(16,22,31,0.85); border:1px solid $border; border-radius:6px; padding:5px 10px;
+    pointer-events:none; line-height:1.5; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #ohlc-info b { color:$text_primary; }
+  #ohlc-info .up { color:$bullish; } #ohlc-info .down { color:$bearish; }
+</style></head>
+<body>
+<div id="wrap">
+  <div id="toolbar">
+    <span class="label">VISIBLE</span>
+    <button data-n="50">50</button><button data-n="100" class="active">100</button>
+    <button data-n="200">200</button><button data-n="500">500</button>
+    <button id="reset-btn">Reset View</button>
+  </div>
+  <div id="chart-container"><div id="ohlc-info"></div></div>
+</div>
+<script>
+(function() {
+  const candles = $candles_json, volumes = $volumes_json, zones = $zones_json,
+        eventLines = $event_lines_json, liquidityLines = $liquidity_lines_json,
+        markers = $markers_json, tradeSetup = $trade_setup_json,
+        defaultBars = $default_bars, title = $title_json;
+
+  const container = document.getElementById('chart-container');
+  const chart = LightweightCharts.createChart(container, {
+    width: container.clientWidth, height: container.clientHeight,
+    layout: { background:{color:'$bg_primary'}, textColor:'$text_secondary', fontFamily:'$font_family' },
+    grid: { vertLines:{color:'$border'}, horzLines:{color:'$border'} },
+    rightPriceScale: { borderColor:'$border' },
+    timeScale: { borderColor:'$border', timeVisible:true, secondsVisible:false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    handleScroll: { mouseWheel:true, pressedMouseMove:true, horzTouchDrag:true, vertTouchDrag:false },
+    handleScale: { mouseWheel:true, pinch:true, axisPressedMouseMove:true },
+  });
+
+  const series = chart.addCandlestickSeries({
+    upColor:'$bullish', downColor:'$bearish', borderVisible:false,
+    wickUpColor:'$bullish', wickDownColor:'$bearish',
+  });
+  window.__chart = chart; window.__series = series;  // debug/test introspection hook
+  series.setData(candles);
+  if (markers.length) series.setMarkers(markers);
+
+  class RectRenderer {
+    constructor(p1,p2,fill,stroke,label){ this._p1=p1; this._p2=p2; this._fill=fill; this._stroke=stroke; this._label=label; }
+    draw(target) {
+      target.useBitmapCoordinateSpace(scope => {
+        if (this._p1.x==null||this._p1.y==null||this._p2.x==null||this._p2.y==null) return;
+        const ctx = scope.context;
+        const x1=this._p1.x*scope.horizontalPixelRatio, y1=this._p1.y*scope.verticalPixelRatio;
+        const x2=this._p2.x*scope.horizontalPixelRatio, y2=this._p2.y*scope.verticalPixelRatio;
+        const rx=Math.min(x1,x2), ry=Math.min(y1,y2), rw=Math.abs(x2-x1), rh=Math.abs(y2-y1);
+        ctx.fillStyle=this._fill; ctx.fillRect(rx,ry,rw,rh);
+        ctx.strokeStyle=this._stroke; ctx.lineWidth=Math.max(1,scope.verticalPixelRatio); ctx.strokeRect(rx,ry,rw,rh);
+        if (this._label && rw > 26*scope.horizontalPixelRatio) {
+          ctx.fillStyle=this._stroke; ctx.font=(10*scope.verticalPixelRatio)+'px $font_family';
+          ctx.fillText(this._label, rx+3*scope.horizontalPixelRatio, ry+11*scope.verticalPixelRatio);
+        }
+      });
+    }
+  }
+  class RectPaneView {
+    constructor(src){ this._src=src; this._p1={x:null,y:null}; this._p2={x:null,y:null}; }
+    update() {
+      const y1=this._src.series.priceToCoordinate(this._src.p1price);
+      const y2=this._src.series.priceToCoordinate(this._src.p2price);
+      const x1=chart.timeScale().timeToCoordinate(this._src.t1);
+      const x2=chart.timeScale().timeToCoordinate(this._src.t2);
+      this._p1={x:x1,y:y1}; this._p2={x:x2,y:y2};
+    }
+    renderer(){ return new RectRenderer(this._p1,this._p2,this._src.fill,this._src.color,this._src.label); }
+  }
+  class RectPrimitive {
+    constructor(series,t1,t2,p1price,p2price,fill,color,label){
+      this.series=series; this.t1=t1; this.t2=t2; this.p1price=p1price; this.p2price=p2price;
+      this.fill=fill; this.color=color; this.label=label; this._views=[new RectPaneView(this)];
+    }
+    updateAllViews(){ this._views.forEach(v=>v.update()); }
+    paneViews(){ return this._views; }
+  }
+
+  zones.forEach(z => series.attachPrimitive(new RectPrimitive(series, z.t1, z.t2, z.p1, z.p2, z.fill, z.color, z.label)));
+
+  eventLines.forEach(l => series.createPriceLine({ price:l.price, color:l.color, lineWidth:l.width, lineStyle:l.style, axisLabelVisible:true, title:l.title }));
+  liquidityLines.forEach(l => series.createPriceLine({ price:l.price, color:l.color, lineWidth:1, lineStyle:2, axisLabelVisible:true, title:l.title }));
+  if (tradeSetup) {
+    series.createPriceLine({ price:tradeSetup.entry, color:'$accent', lineWidth:1, lineStyle:0, axisLabelVisible:true, title:'Entry' });
+    series.createPriceLine({ price:tradeSetup.stop, color:'$bearish', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'Stop' });
+    series.createPriceLine({ price:tradeSetup.target, color:'$bullish', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'Target' });
+  }
+
+  function setVisibleBars(n) {
+    const total = candles.length;
+    if (!total) return;
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, total - n), to: total - 1 + 2 });
+  }
+  setVisibleBars(defaultBars);
+
+  document.querySelectorAll('#toolbar button[data-n]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#toolbar button[data-n]').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      setVisibleBars(parseInt(btn.dataset.n, 10));
+    });
+  });
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    document.querySelectorAll('#toolbar button[data-n]').forEach(b=>b.classList.remove('active'));
+    document.querySelector('#toolbar button[data-n="' + defaultBars + '"]')?.classList.add('active');
+    setVisibleBars(defaultBars);
+  });
+
+  const infoBox = document.getElementById('ohlc-info');
+  function fmt(n){ return n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function updateInfo(param) {
+    let d = candles[candles.length-1], t = d.time;
+    if (param && param.time) {
+      const data = param.seriesData.get(series);
+      if (data) { d = data; t = param.time; }
+    }
+    const dt = new Date(t*1000);
+    const dateStr = dt.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'});
+    const vol = volumes[t];
+    const cls = d.close >= d.open ? 'up' : 'down';
+    infoBox.innerHTML = '<b>'+title+'</b> &nbsp; '+dateStr+
+      '<br>O <span class="'+cls+'">'+fmt(d.open)+'</span> H <span class="'+cls+'">'+fmt(d.high)+'</span> '+
+      'L <span class="'+cls+'">'+fmt(d.low)+'</span> C <span class="'+cls+'">'+fmt(d.close)+'</span>'+
+      (vol !== undefined ? ('<br>Volume '+Math.round(vol).toLocaleString()) : '');
+  }
+  updateInfo(null);
+  chart.subscribeCrosshairMove(updateInfo);
+
+  new ResizeObserver(entries => {
+    if (!entries.length) return;
+    const { width, height } = entries[0].contentRect;
+    chart.applyOptions({ width, height });
+  }).observe(container);
+})();
+</script>
+</body></html>
+""")
+
+
+def render_lightweight_chart(
+    df,
+    result: dict,
+    poi_result: dict | None = None,
+    title: str = "Market Structure",
+    visible: dict | None = None,
+    show_liquidity: bool = False,
+    trade_setup: dict | None = None,
+    height: int = 700,
+    default_visible_bars: int = 100,
+) -> str:
+    """
+    Builds a self-contained HTML+JS document embedding a TradingView
+    Lightweight Charts candlestick chart with this project's SMC zones/
+    events overlaid. Pass the returned string to
+    streamlit.components.v1.html(html, height=height). See the module
+    docstring's "Lightweight Charts (TradingView) renderer" section for
+    why this exists alongside the Plotly functions above.
+    """
+    visible = visible or {}
+    x_times = _unix_seconds(df.index)
+    candles, volumes = _candle_payload(df)
+
+    zones = _lwc_zone_payload(poi_result, x_times, max_extend=max(40, default_visible_bars // 2), visible=visible) if poi_result else []
+    event_lines = _lwc_event_lines(result["events"], visible)
+    liquidity_lines = _lwc_liquidity_lines(result["swings"], visible) if show_liquidity else []
+    markers = _lwc_markers(result["swings"], x_times, visible)
+
+    return _CHART_HTML.substitute(
+        bg_primary=BG_PRIMARY, bg_card=BG_CARD, border=BORDER, accent=ACCENT,
+        bullish=BULLISH_COLOR, bearish=BEARISH_COLOR, text_primary=TEXT_PRIMARY,
+        text_secondary=TEXT_SECONDARY, text_muted=TEXT_MUTED, font_family=FONT_FAMILY,
+        height=height, default_bars=default_visible_bars,
+        candles_json=_json.dumps(candles), volumes_json=_json.dumps(volumes),
+        zones_json=_json.dumps(zones), event_lines_json=_json.dumps(event_lines),
+        liquidity_lines_json=_json.dumps(liquidity_lines), markers_json=_json.dumps(markers),
+        trade_setup_json=_json.dumps(trade_setup), title_json=_json.dumps(title),
+    )
+
+
+def render_lightweight_multi_timeframe_chart(
+    ltf_df,
+    ltf_result: dict,
+    htf_zones: list,
+    title: str = "Top-Down Entry Chart",
+    height: int = 700,
+    default_visible_bars: int = 100,
+    visible: dict | None = None,
+) -> str:
+    """
+    Same renderer as render_lightweight_chart(), for the Top-Down page's
+    HTF-zones-on-LTF-candles view. htf_zones (top_down.HTFZone) already
+    carry real pd.Timestamp bounds, so -- unlike the old Plotly version,
+    which had to map row-index positions across differently-sized HTF/LTF
+    DataFrames -- this just converts those timestamps straight to UNIX
+    seconds. One shared HTML/JS template for both pages, per instruction:
+    fix the shared chart component rather than maintaining two.
+    """
+    import bisect
+
+    visible = visible or {}
+    x_times = _unix_seconds(ltf_df.index)
+    candles, volumes = _candle_payload(ltf_df)
+
+    n = len(x_times)
+    zones = []
+    for zone in htf_zones:
+        group = f"{zone.timeframe.upper()} {zone.poi_type}"
+        if not visible.get(group, True):
+            continue
+
+        formed_ts = int(zone.formed_at.timestamp())
+        if formed_ts > x_times[-1] or (zone.mitigated_at is not None and int(zone.mitigated_at.timestamp()) < x_times[0]):
+            continue  # zone's whole active window falls outside this LTF chart's range
+
+        # HTF zone timestamps rarely land exactly on an LTF candle -- find
+        # the nearest LTF candle at/after each boundary (bisect on the
+        # already-ascending x_times), same "clamp to what's actually on
+        # this chart" rule the old Plotly renderer used.
+        start_idx = min(bisect.bisect_left(x_times, formed_ts), n - 1)
+        t1 = x_times[start_idx]
+
+        if zone.mitigated_at is not None:
+            mitigated_ts = int(zone.mitigated_at.timestamp())
+            end_idx = min(bisect.bisect_left(x_times, mitigated_ts), n - 1)
+        else:
+            end_idx = min(start_idx + max(40, default_visible_bars // 2), n - 1)
+        t2 = x_times[end_idx]
+
+        color = HTF_TIMEFRAME_COLORS.get(zone.timeframe, TEXT_SECONDARY)
+        fill = (FVG_BULLISH_FILL if zone.direction == "bullish" else FVG_BEARISH_FILL) if zone.poi_type == "FVG" else "rgba(148,163,184,0.08)"
+        zones.append({"t1": t1, "t2": t2, "p1": zone.zone_low, "p2": zone.zone_high, "color": color, "fill": fill, "label": group})
+
+    markers = _lwc_markers(ltf_result["swings"], x_times, {"Swings": visible.get("Swings", False)})
+
+    return _CHART_HTML.substitute(
+        bg_primary=BG_PRIMARY, bg_card=BG_CARD, border=BORDER, accent=ACCENT,
+        bullish=BULLISH_COLOR, bearish=BEARISH_COLOR, text_primary=TEXT_PRIMARY,
+        text_secondary=TEXT_SECONDARY, text_muted=TEXT_MUTED, font_family=FONT_FAMILY,
+        height=height, default_bars=default_visible_bars,
+        candles_json=_json.dumps(candles), volumes_json=_json.dumps(volumes),
+        zones_json=_json.dumps(zones), event_lines_json="[]",
+        liquidity_lines_json="[]", markers_json=_json.dumps(markers),
+        trade_setup_json="null", title_json=_json.dumps(title),
+    )
+
+
 if __name__ == "__main__":
     import sys
     from pathlib import Path

@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -48,7 +49,7 @@ from backtester import (  # noqa: E402
 )
 from chart import (  # noqa: E402
     ACCENT, BEARISH_COLOR, BG_CARD, BORDER, BULLISH_COLOR, FONT_FAMILY, TEXT_MUTED, TEXT_SECONDARY,
-    plot_multi_timeframe_zones, plot_structure,
+    render_lightweight_chart, render_lightweight_multi_timeframe_chart,
 )
 from top_down import HTF_TO_LTF, collect_htf_zones, find_top_down_entries  # noqa: E402
 from fundamentals import fetch_ticker_profile  # noqa: E402
@@ -540,11 +541,12 @@ def page_analyze() -> None:
     # --- Chart (hero element) + side panel ---
     chart_col, side_col = st.columns([3, 1], gap="small")
     with chart_col:
-        fig = plot_structure(
+        chart_html = render_lightweight_chart(
             df, structure_result, poi_result=poi_result, title=f"{ticker.upper()} · NSE · {timeframe}",
-            visible=visible, show_liquidity=show_liquidity, trade_setup=trade_setup, height=680,
+            visible=visible, show_liquidity=show_liquidity, trade_setup=trade_setup,
+            height=700, default_visible_bars=100,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        components.html(chart_html, height=700, scrolling=False)
 
     with side_col:
         st.markdown('<div class="section-sub" style="margin-bottom:4px;"><b>SMART MONEY ANALYSIS</b></div>', unsafe_allow_html=True)
@@ -674,8 +676,11 @@ def page_top_down() -> None:
         st.markdown(f"**Trade bias:** {badge(dominant.value.upper(), trade_bias_kind)}", unsafe_allow_html=True)
 
     st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
-    fig = plot_multi_timeframe_zones(data[ltf], ltf_structure, htf_zones, title=f"{ticker.upper()} — {htf.upper()} zones on {ltf.upper()}", height=650)
-    st.plotly_chart(fig, use_container_width=True)
+    chart_html = render_lightweight_multi_timeframe_chart(
+        data[ltf], ltf_structure, htf_zones, title=f"{ticker.upper()} — {htf.upper()} zones on {ltf.upper()}",
+        height=700, default_visible_bars=100,
+    )
+    components.html(chart_html, height=700, scrolling=False)
 
 
 # ---------------------------------------------------------------------------
