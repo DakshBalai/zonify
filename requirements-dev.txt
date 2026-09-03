@@ -1,0 +1,11 @@
+-r requirements.txt
+
+# Dev/test only -- NOT needed to run the deployed app (streamlit run
+# app/app.py never imports either of these), so they're kept out of
+# requirements.txt on purpose. kaleido in particular pulls in its own
+# browser-automation runtime (a Playwright/Chromium download) that has
+# broken Streamlit Cloud's dependency install before -- see
+# src/chart.py's __main__ preview script and tests/ for what actually
+# uses these.
+pytest>=8.0
+kaleido>=0.2.1
