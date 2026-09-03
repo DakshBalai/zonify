@@ -44,21 +44,29 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 
+from theme import DARK as _DARK, LIGHT as _LIGHT, FONT_FAMILY
+
 # ---------------------------------------------------------------------------
-# Design tokens -- kept in one place and imported by app.py so the chart
-# and the surrounding dashboard chrome use identical colors.
+# Design tokens -- sourced from theme.py's DARK/LIGHT palettes (the single
+# source of truth shared with app.py's CSS) so the chart and the
+# surrounding dashboard chrome are always the same colors, never a second
+# hardcoded copy that can drift out of sync. Module-level constants below
+# stay pinned to the DARK palette for backward compatibility (the legacy
+# Plotly path below, and any external caller importing these directly);
+# render_lightweight_chart()/render_lightweight_multi_timeframe_chart()
+# accept a `theme` argument and resolve colors per-call instead -- see
+# _chart_palette().
 # ---------------------------------------------------------------------------
-BG_PRIMARY = "#080C12"
-BG_CARD = "#10161F"
-BG_CARD_ALT = "#111820"
-BORDER = "#202A36"
-ACCENT = "#21D4B4"
-BULLISH_COLOR = "#22C55E"   # professional green -- deliberately distinct from ACCENT (brand teal)
-BEARISH_COLOR = "#EF4444"   # professional red
-TEXT_PRIMARY = "#F5F7FA"
-TEXT_SECONDARY = "#94A3B8"
-TEXT_MUTED = "#64748B"
-FONT_FAMILY = "Inter, -apple-system, BlinkMacSystemFont, sans-serif"
+BG_PRIMARY = _DARK["bg-primary"]
+BG_CARD = _DARK["surface"]
+BG_CARD_ALT = _DARK["surface-elevated"]
+BORDER = _DARK["border"]
+ACCENT = _DARK["accent-bright"]
+BULLISH_COLOR = _DARK["bullish"]   # professional green -- deliberately distinct from ACCENT (brand blue)
+BEARISH_COLOR = _DARK["bearish"]   # professional red
+TEXT_PRIMARY = _DARK["text-primary"]
+TEXT_SECONDARY = _DARK["text-secondary"]
+TEXT_MUTED = _DARK["text-muted"]
 
 IDM_COLOR = "#A78BFA"   # muted violet -- a sweep is a liquidity mechanic, not a directional claim
 MB_COLOR = "#7C8698"     # muted grey -- MitigationBlock is this project's weakest-validated signal
@@ -78,7 +86,7 @@ FVG_INVALID_FILL = "rgba(148,163,184,0.08)"   # faint grey -- valid=False (wrong
 # to keep "1H FVG" visually distinct from "4H FVG" even though both are FVGs.
 HTF_TIMEFRAME_COLORS = {
     "monthly": "#C084FC", "weekly": "#818CF8", "daily": "#38BDF8",
-    "4h": "#21D4B4", "1h": "#FBBF24",
+    "4h": "#F472B6", "1h": "#FBBF24",
 }
 
 
@@ -563,7 +571,74 @@ def plot_multi_timeframe_zones(
 # ---------------------------------------------------------------------------
 
 import json as _json
+import logging as _logging
 from string import Template as _Template
+
+import numpy as np
+
+_logger = _logging.getLogger(__name__)
+
+
+class ChartDataError(ValueError):
+    """
+    Raised by render_lightweight_chart()/render_lightweight_multi_timeframe_chart()
+    when the OHLC DataFrame has nothing valid left to plot. Callers (app.py)
+    should catch this specifically and show a "market data unavailable"
+    message instead of embedding a broken/empty chart.
+    """
+
+
+def _validate_chart_df(df) -> None:
+    """
+    Final defensive check, run right before a df is turned into the chart's
+    JS payload. Deliberately does NOT drop, dedupe, or re-sort rows the way
+    data_loader._clean_ohlcv() does -- by the time a df reaches here,
+    structure_engine.analyze_structure()/poi_engine.analyze_poi() have
+    already computed swings/events/zones as POSITIONAL indices into this
+    exact row order (poi.index, event.index, ...); silently mutating the
+    df here would desync those indices from the candles actually drawn,
+    trading one rendering bug for a worse, silent one.
+
+    So this only ever raises ChartDataError -- refusing to render -- if the
+    upstream guarantee (data_loader.py's job: no NaN/inf OHLC, unique
+    ascending timestamps) was ever violated, e.g. by a caller passing a
+    differently-cleaned df than the one actually analyzed.
+    """
+    if df is None or len(df) == 0:
+        raise ChartDataError("No OHLC rows to chart -- the DataFrame is empty.")
+    ohlc = df[["open", "high", "low", "close"]].to_numpy(dtype="float64")
+    if not np.isfinite(ohlc).all():
+        n_bad = int((~np.isfinite(ohlc)).any(axis=1).sum())
+        raise ChartDataError(
+            f"{n_bad} of {len(df)} OHLC row(s) contain a non-finite (NaN/inf) price -- "
+            "refusing to chart it. This should already be impossible after "
+            "data_loader._clean_ohlcv(); check whatever produced this DataFrame."
+        )
+    if not df.index.is_monotonic_increasing:
+        raise ChartDataError("OHLC index is not sorted ascending -- refusing to chart it.")
+    if df.index.duplicated().any():
+        raise ChartDataError("OHLC index has duplicate timestamps -- refusing to chart it.")
+
+
+def _chart_palette(theme: str) -> dict:
+    """
+    Resolves the Lightweight Charts renderer's chrome colors (background,
+    grid/border, text, candle up/down, accent) for 'dark' or 'light' from
+    theme.py's shared token palettes -- the SAME tokens app.py's CSS uses,
+    so the chart never looks like a different product bolted onto the
+    dashboard around it. Falls back to dark on an unrecognized value
+    rather than raising, since a chart failing to render over a theme typo
+    would be a much worse user-facing failure than defaulting silently.
+    """
+    tokens = _LIGHT if theme == "light" else _DARK
+    ohlc_info_bg = "rgba(255,255,255,0.90)" if theme == "light" else "rgba(16,22,31,0.85)"
+    return {
+        "bg_primary": tokens["bg-primary"], "bg_card": tokens["surface"],
+        "border": tokens["border"], "accent": tokens["accent-bright"],
+        "bullish": tokens["bullish"], "bearish": tokens["bearish"],
+        "text_primary": tokens["text-primary"], "text_secondary": tokens["text-secondary"],
+        "text_muted": tokens["text-muted"], "ohlc_info_bg": ohlc_info_bg,
+    }
 
 
 def _unix_seconds(index) -> list[int]:
@@ -689,14 +764,17 @@ _CHART_HTML = _Template(r"""
   #toolbar button { background:transparent; color:$text_secondary; border:1px solid $border; border-radius:6px;
     font-size:11px; padding:3px 10px; cursor:pointer; font-family:$font_family; font-weight:600; }
   #toolbar button:hover { border-color:$accent; color:$accent; }
-  #toolbar button.active { background:$accent; color:#06110D; border-color:$accent; }
+  #toolbar button.active { background:$accent; color:#FFFFFF; border-color:$accent; }
   #toolbar .label { color:$text_muted; font-size:10px; font-weight:700; letter-spacing:0.05em; margin-right:2px; }
   #chart-container { width:100%; height:calc(${height}px - 38px); position:relative; }
   #ohlc-info { position:absolute; top:8px; left:10px; z-index:5; font-size:11px; color:$text_secondary;
-    background:rgba(16,22,31,0.85); border:1px solid $border; border-radius:6px; padding:5px 10px;
+    background:$ohlc_info_bg; border:1px solid $border; border-radius:6px; padding:5px 10px;
     pointer-events:none; line-height:1.5; font-variant-numeric:tabular-nums; white-space:nowrap; }
   #ohlc-info b { color:$text_primary; }
   #ohlc-info .up { color:$bullish; } #ohlc-info .down { color:$bearish; }
+  #chart-error { display:none; position:absolute; inset:0; align-items:center; justify-content:center;
+    flex-direction:column; gap:6px; text-align:center; padding:24px; color:$text_secondary; font-size:12px; }
+  #chart-error b { color:$text_primary; font-size:13px; }
 </style></head>
 <body>
 <div id="wrap">
@@ -706,18 +784,32 @@ _CHART_HTML = _Template(r"""
     <button data-n="200">200</button><button data-n="500">500</button>
     <button id="reset-btn">Reset View</button>
   </div>
-  <div id="chart-container"><div id="ohlc-info"></div></div>
+  <div id="chart-container">
+    <div id="ohlc-info"></div>
+    <div id="chart-error"><b>Chart failed to render</b><span>Historical OHLC data could not be displayed. See browser console for details.</span></div>
+  </div>
 </div>
 <script>
 (function() {
+  try {
   const candles = $candles_json, volumes = $volumes_json, zones = $zones_json,
         eventLines = $event_lines_json, liquidityLines = $liquidity_lines_json,
         markers = $markers_json, tradeSetup = $trade_setup_json,
         defaultBars = $default_bars, title = $title_json;
 
+  if (!Array.isArray(candles) || candles.length === 0) {
+    throw new Error('No candle data received by the chart component (empty candles array).');
+  }
+
   const container = document.getElementById('chart-container');
+  // Inside a Streamlit components.html iframe, the container can still be
+  // mid-layout (clientWidth/Height 0) at the instant this script runs --
+  // fall back to the wrapper's size so the chart is never created at 0x0,
+  // and the ResizeObserver below still corrects it once real layout lands.
+  const initialWidth = container.clientWidth || document.getElementById('wrap').clientWidth || 800;
+  const initialHeight = container.clientHeight || (${height} - 38);
   const chart = LightweightCharts.createChart(container, {
-    width: container.clientWidth, height: container.clientHeight,
+    width: initialWidth, height: initialHeight,
     layout: { background:{color:'$bg_primary'}, textColor:'$text_secondary', fontFamily:'$font_family' },
     grid: { vertLines:{color:'$border'}, horzLines:{color:'$border'} },
     rightPriceScale: { borderColor:'$border' },
@@ -826,8 +918,23 @@ _CHART_HTML = _Template(r"""
   new ResizeObserver(entries => {
     if (!entries.length) return;
     const { width, height } = entries[0].contentRect;
-    chart.applyOptions({ width, height });
+    if (width > 0 && height > 0) chart.applyOptions({ width, height });
   }).observe(container);
+
+  // Belt-and-suspenders for the 0x0-at-creation race above: if the
+  // container's real size wasn't available yet when the chart was
+  // created, and the ResizeObserver above never fires again because
+  // Streamlit's iframe layout was already stable by then, this one-shot
+  // check corrects it shortly after the container actually paints.
+  setTimeout(() => {
+    const rect = container.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) chart.applyOptions({ width: rect.width, height: rect.height });
+  }, 100);
+  } catch (err) {
+    console.error('[chart] failed to render:', err);
+    const errorBox = document.getElementById('chart-error');
+    if (errorBox) errorBox.style.display = 'flex';
+  }
 })();
 </script>
 </body></html>
@@ -844,6 +951,7 @@ def render_lightweight_chart(
     trade_setup: dict | None = None,
     height: int = 700,
     default_visible_bars: int = 100,
+    theme: str = "dark",
 ) -> str:
     """
     Builds a self-contained HTML+JS document embedding a TradingView
@@ -852,8 +960,17 @@ def render_lightweight_chart(
     streamlit.components.v1.html(html, height=height). See the module
     docstring's "Lightweight Charts (TradingView) renderer" section for
     why this exists alongside the Plotly functions above.
+
+    theme: "dark" or "light" -- resolves chart chrome (background, grid,
+    text, candle up/down, accent) from theme.py's shared token palettes;
+    see _chart_palette(). Candle colors flip with the theme too (a
+    slightly deeper green/red on light backgrounds for contrast, per
+    theme.py's LIGHT palette) -- SMC zone/event colors stay theme-
+    independent translucent overlays, which read fine on either background.
     """
     visible = visible or {}
+    _validate_chart_df(df)
+    palette = _chart_palette(theme)
     x_times = _unix_seconds(df.index)
     candles, volumes = _candle_payload(df)
 
@@ -863,9 +980,7 @@ def render_lightweight_chart(
     markers = _lwc_markers(result["swings"], x_times, visible)
 
     return _CHART_HTML.substitute(
-        bg_primary=BG_PRIMARY, bg_card=BG_CARD, border=BORDER, accent=ACCENT,
-        bullish=BULLISH_COLOR, bearish=BEARISH_COLOR, text_primary=TEXT_PRIMARY,
-        text_secondary=TEXT_SECONDARY, text_muted=TEXT_MUTED, font_family=FONT_FAMILY,
+        font_family=FONT_FAMILY, **palette,
         height=height, default_bars=default_visible_bars,
         candles_json=_json.dumps(candles), volumes_json=_json.dumps(volumes),
         zones_json=_json.dumps(zones), event_lines_json=_json.dumps(event_lines),
@@ -882,6 +997,7 @@ def render_lightweight_multi_timeframe_chart(
     height: int = 700,
     default_visible_bars: int = 100,
     visible: dict | None = None,
+    theme: str = "dark",
 ) -> str:
     """
     Same renderer as render_lightweight_chart(), for the Top-Down page's
@@ -891,10 +1007,14 @@ def render_lightweight_multi_timeframe_chart(
     DataFrames -- this just converts those timestamps straight to UNIX
     seconds. One shared HTML/JS template for both pages, per instruction:
     fix the shared chart component rather than maintaining two.
+
+    theme: see render_lightweight_chart().
     """
     import bisect
 
     visible = visible or {}
+    _validate_chart_df(ltf_df)
+    palette = _chart_palette(theme)
     x_times = _unix_seconds(ltf_df.index)
     candles, volumes = _candle_payload(ltf_df)
 
@@ -930,9 +1050,7 @@ def render_lightweight_multi_timeframe_chart(
     markers = _lwc_markers(ltf_result["swings"], x_times, {"Swings": visible.get("Swings", False)})
 
     return _CHART_HTML.substitute(
-        bg_primary=BG_PRIMARY, bg_card=BG_CARD, border=BORDER, accent=ACCENT,
-        bullish=BULLISH_COLOR, bearish=BEARISH_COLOR, text_primary=TEXT_PRIMARY,
-        text_secondary=TEXT_SECONDARY, text_muted=TEXT_MUTED, font_family=FONT_FAMILY,
+        font_family=FONT_FAMILY, **palette,
         height=height, default_bars=default_visible_bars,
         candles_json=_json.dumps(candles), volumes_json=_json.dumps(volumes),
         zones_json=_json.dumps(zones), event_lines_json="[]",
