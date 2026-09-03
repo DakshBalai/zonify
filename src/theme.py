@@ -159,25 +159,73 @@ def inject_global_css() -> None:
            mechanism), which this styles as a bordered bar in normal
            document flow. */
         .st-key-zf_header {{
-            background: var(--bg-header); border: 1px solid var(--border); border-radius: 12px;
-            padding: 10px 18px; margin-bottom: 10px; box-shadow: var(--shadow-sm);
+            background: var(--bg-header); border: 1px solid var(--border); border-radius: 14px;
+            padding: 19px 22px; margin-bottom: 18px; box-shadow: var(--shadow-sm);
         }}
-        .st-key-zf_header div[data-testid="stHorizontalBlock"] {{ align-items: center; gap: 12px; }}
-        .zf-header-left {{ display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 0 auto; }}
-        .zf-logo {{ font-size: 21px; font-weight: 800; letter-spacing: 0.02em; color: var(--accent-bright); white-space: nowrap; }}
-        .zf-tagline {{ font-size: 11px; color: var(--text-secondary); white-space: nowrap; border-left: 1px solid var(--border); padding-left: 10px; }}
+        .st-key-zf_header div[data-testid="stHorizontalBlock"] {{ align-items: center; gap: 14px; }}
+        .zf-header-left {{ display: flex; align-items: center; gap: 11px; min-width: 0; flex: 0 0 auto; }}
+        .zf-header-left svg {{ flex: 0 0 auto; display: block; }}
+        .zf-logo {{
+            font-size: 22px; font-weight: 800; letter-spacing: 0.02em; white-space: nowrap;
+            background: linear-gradient(90deg, #60A5FA, #3B82F6 55%, #2563EB);
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+            color: var(--accent-bright); /* fallback if background-clip:text isn't supported */
+        }}
+        .zf-tagline {{ font-size: 11.5px; color: var(--text-secondary); white-space: nowrap; border-left: 1px solid var(--border); padding-left: 11px; }}
         .zf-header-right {{ display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; width: 100%; }}
-        .st-key-zf_header div[data-testid="stTextInput"] input {{ height: 38px; }}
+        .st-key-zf_header div[data-testid="stTextInput"] input {{
+            height: 43px !important; padding-left: 40px !important; font-size: 13.5px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E") !important;
+            background-repeat: no-repeat !important; background-position: 14px center !important;
+        }}
 
         .st-key-zf_theme_toggle button {{
-            border-radius: 999px !important; width: 38px !important; height: 38px !important; min-height: 38px !important;
-            padding: 0 !important; font-size: 16px !important; border: 1px solid var(--border) !important;
+            border-radius: 999px !important; width: 40px !important; height: 40px !important; min-height: 40px !important;
+            padding: 0 !important; font-size: 17px !important; border: 1px solid var(--border) !important;
             background: var(--surface) !important; color: var(--text-secondary) !important;
         }}
         .st-key-zf_theme_toggle button:hover {{ border-color: var(--accent) !important; color: var(--accent-bright) !important; }}
 
-        /* ================= NAV CONTAINER ================= */
-        .st-key-zf_nav {{ margin: 2px 0 12px 0; }}
+        /* ================= NAV CONTAINER =================
+           Its own bordered row, well clear of the performance cards above
+           (see .kpi-card's min-height fix below for why those two used to
+           visually collide) -- a real 18px section gap, not a negative
+           margin pulling it upward. */
+        .st-key-zf_nav {{ margin: 14px 0 22px 0; }}
+        .st-key-zf_nav div[data-testid="stHorizontalBlock"] {{ gap: 10px; }}
+
+        /* ---- Nav icons: plain vector shapes via CSS mask, no emoji ----
+           Each nav button sits in its own st.container(key=f"navicon_{{id}}")
+           wrapper (app.py), giving a stable `.st-key-navicon_<id>` class to
+           hang a `::before` mask-image icon on -- the icon inherits the
+           button's current text color via `background-color: currentColor`
+           masked by the SVG shape, so it's automatically correct in both
+           the active (white-on-blue) and inactive (muted) states and both
+           themes, with no separate color variant needed. */
+        .st-key-zf_nav div[data-testid="stButton"] button {{
+            display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        }}
+        .st-key-zf_nav div[data-testid="stButton"] button::before {{
+            content: ""; display: inline-block; width: 15px; height: 15px; flex: 0 0 auto;
+            background-color: currentColor; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+            -webkit-mask-position: center; mask-position: center; -webkit-mask-size: contain; mask-size: contain;
+        }}
+        .st-key-navicon_screener button::before {{
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='21' y1='4' x2='14' y2='4'/%3E%3Cline x1='10' y1='4' x2='3' y2='4'/%3E%3Cline x1='21' y1='12' x2='12' y2='12'/%3E%3Cline x1='8' y1='12' x2='3' y2='12'/%3E%3Cline x1='21' y1='20' x2='16' y2='20'/%3E%3Cline x1='12' y1='20' x2='3' y2='20'/%3E%3Cline x1='14' y1='2' x2='14' y2='6'/%3E%3Cline x1='8' y1='10' x2='8' y2='14'/%3E%3Cline x1='16' y1='18' x2='16' y2='22'/%3E%3C/svg%3E");
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='21' y1='4' x2='14' y2='4'/%3E%3Cline x1='10' y1='4' x2='3' y2='4'/%3E%3Cline x1='21' y1='12' x2='12' y2='12'/%3E%3Cline x1='8' y1='12' x2='3' y2='12'/%3E%3Cline x1='21' y1='20' x2='16' y2='20'/%3E%3Cline x1='12' y1='20' x2='3' y2='20'/%3E%3Cline x1='14' y1='2' x2='14' y2='6'/%3E%3Cline x1='8' y1='10' x2='8' y2='14'/%3E%3Cline x1='16' y1='18' x2='16' y2='22'/%3E%3C/svg%3E");
+        }}
+        .st-key-navicon_analyze button::before {{
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='3' y1='21' x2='21' y2='21'/%3E%3Crect x='6' y='9' width='4' height='7'/%3E%3Cline x1='8' y1='5' x2='8' y2='9'/%3E%3Cline x1='8' y1='16' x2='8' y2='18'/%3E%3Crect x='14' y='4' width='4' height='9'/%3E%3Cline x1='16' y1='2' x2='16' y2='4'/%3E%3Cline x1='16' y1='13' x2='16' y2='16'/%3E%3C/svg%3E");
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='3' y1='21' x2='21' y2='21'/%3E%3Crect x='6' y='9' width='4' height='7'/%3E%3Cline x1='8' y1='5' x2='8' y2='9'/%3E%3Cline x1='8' y1='16' x2='8' y2='18'/%3E%3Crect x='14' y='4' width='4' height='9'/%3E%3Cline x1='16' y1='2' x2='16' y2='4'/%3E%3Cline x1='16' y1='13' x2='16' y2='16'/%3E%3C/svg%3E");
+        }}
+        .st-key-navicon_topdown button::before {{
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black' stroke='none'%3E%3Cpolygon points='12,2 22,8 12,14 2,8'/%3E%3Cpolygon points='2,12.5 12,18.5 22,12.5 22,15.5 12,21.5 2,15.5' opacity='0.55'/%3E%3C/svg%3E");
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black' stroke='none'%3E%3Cpolygon points='12,2 22,8 12,14 2,8'/%3E%3Cpolygon points='2,12.5 12,18.5 22,12.5 22,15.5 12,21.5 2,15.5' opacity='0.55'/%3E%3C/svg%3E");
+        }}
+        .st-key-navicon_backtest button::before {{
+            -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black' stroke='none'%3E%3Crect x='4' y='14' width='4' height='7' rx='0.5'/%3E%3Crect x='10' y='8' width='4' height='13' rx='0.5'/%3E%3Crect x='16' y='3' width='4' height='18' rx='0.5'/%3E%3C/svg%3E");
+            mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black' stroke='none'%3E%3Crect x='4' y='14' width='4' height='7' rx='0.5'/%3E%3Crect x='10' y='8' width='4' height='13' rx='0.5'/%3E%3Crect x='16' y='3' width='4' height='18' rx='0.5'/%3E%3C/svg%3E");
+        }}
 
         /* ================= TOP MOVERS (horizontal-scroll button row) ================= */
         .st-key-zf_movers {{ overflow-x: auto; gap: 8px; padding: 2px 2px 8px 2px; flex-wrap: nowrap !important; }}
@@ -202,13 +250,18 @@ def inject_global_css() -> None:
         .zf-pill.offline {{ color: var(--bearish); border-color: var(--bearish-tint); background: var(--bearish-tint); }}
         .zf-pill.offline .dot {{ background: var(--bearish); }}
 
-        /* ================= MARKET STRIP ================= */
+        /* ================= MARKET STRIP =================
+           A real responsive grid (not a fixed-min-width horizontal-scroll
+           row) -- with exactly 4 index cards this fills the available
+           width evenly instead of leaving dead space to the right, and
+           reflows to 2 then 1 column on narrow viewports. */
         .zf-market-strip {{
-            display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 6px 2px; margin-bottom: 6px;
-            scrollbar-width: thin;
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px;
         }}
+        @media (max-width: 1000px) {{ .zf-market-strip {{ grid-template-columns: repeat(2, 1fr); }} }}
+        @media (max-width: 560px) {{ .zf-market-strip {{ grid-template-columns: 1fr; }} }}
         .zf-index-card {{
-            flex: 0 0 auto; min-width: 168px; padding: 9px 16px; border-radius: 10px;
+            min-width: 0; padding: 12px 16px; border-radius: 10px;
             background: var(--surface); border: 1px solid var(--border);
         }}
         .zf-index-name {{ font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.04em; white-space: nowrap; }}
@@ -241,10 +294,19 @@ def inject_global_css() -> None:
         .section-title {{ font-size: 16px; font-weight: 700; margin: 2px 0 0 0; color: var(--text-primary); }}
         .section-sub {{ color: var(--text-secondary); font-size: 12.5px; margin-bottom: 8px; line-height: 1.5; }}
 
-        /* ================= CARDS / METRICS ================= */
+        /* ================= CARDS / METRICS =================
+           A real grid, not st.columns(): Streamlit's per-column
+           auto-height sizing for raw-HTML content measures each card
+           BEFORE this injected CSS can resize it and never re-measures --
+           confirmed directly (DevTools) as a consistent 16px shortfall
+           that let cards visually bleed into the nav row below. See
+           render_proof_strip() in app.py. */
+        .zf-proof-strip {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }}
+        @media (max-width: 1000px) {{ .zf-proof-strip {{ grid-template-columns: 1fr; }} }}
+        div[data-testid="stElementContainer"]:has(.zf-proof-strip) {{ min-height: 94px !important; }}
         .kpi-card {{
             border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
-            padding: 10px 16px; height: 100%; min-width: 0;
+            padding: 12px 16px; min-width: 0; box-sizing: border-box;
         }}
         .kpi-label {{ color: var(--text-muted); font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .kpi-row {{ display: flex; align-items: baseline; gap: 7px; margin-top: 2px; flex-wrap: wrap; }}
@@ -254,7 +316,7 @@ def inject_global_css() -> None:
         .kpi-sub {{ color: var(--text-muted); font-size: 11px; font-weight: 600; white-space: nowrap; }}
         .kpi-detail {{ color: var(--text-secondary); font-size: 11.5px; margin-top: 2px; }}
 
-        .info-card {{ border-radius: 9px; border: 1px solid var(--border); background: var(--surface); padding: 6px 13px; }}
+        .info-card {{ border-radius: 10px; border: 1px solid var(--border); background: var(--surface); padding: 7px 13px; }}
         .info-card .lbl {{ color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .info-card .val {{ color: var(--text-primary); font-size: 14px; font-weight: 700; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
 
@@ -262,6 +324,13 @@ def inject_global_css() -> None:
             display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--border); border-radius: 10px;
             background: var(--surface); overflow: hidden; margin: 4px 0;
         }}
+        /* Same Streamlit quirk as .zf-proof-strip above: the wrapping
+           stElementContainer's auto-height under-measures a raw-HTML
+           st.markdown() block by a small, content-dependent amount (8px
+           here) -- confirmed directly, not assumed -- letting this strip
+           bleed into whatever renders right after it (the sidebar's
+           "SMART MONEY ANALYSIS" heading). */
+        div[data-testid="stElementContainer"]:has(> .stMarkdown .data-strip) {{ min-height: 60px !important; }}
         .data-strip .item {{ flex: 1 1 120px; min-width: 100px; padding: 7px 16px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }}
         .data-strip .item:last-child {{ border-right: none; }}
         .data-strip .lbl {{ color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }}
@@ -328,12 +397,29 @@ def inject_global_css() -> None:
         }}
         div[data-baseweb="select"]:focus-within > div {{ border-color: var(--accent) !important; box-shadow: 0 0 0 2px var(--accent-tint) !important; }}
         ul[data-testid="stSelectboxVirtualDropdown"] {{ background: var(--surface-elevated) !important; border: 1px solid var(--border) !important; }}
-        div[data-testid="stCheckbox"] {{ margin-top: -4px; margin-bottom: -4px; }}
+
+        /* ---- Layer toggles as chips, not a default form ----
+           No negative margins: each chip carries its own real padding/
+           border, so the row's height is however tall a chip actually is
+           -- spacing between the two rows comes from the column gap
+           st.container(key="zf_layer_chips") sets below, not a hack
+           pulling rows together. The checkbox box is a <span> with NO
+           role/aria-checked of its own (those live on the sibling <input>
+           that follows it in the DOM) -- found by inspecting the actual
+           rendered markup, not assumed. */
+        .zf-chip-label {{ color: var(--text-muted); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; margin: 10px 0 6px 0; }}
+        .st-key-zf_layer_chips div[data-testid="stHorizontalBlock"] {{ row-gap: 8px; }}
+        label[data-baseweb="checkbox"] {{
+            display: inline-flex !important; align-items: center; gap: 6px;
+            background: var(--surface) !important; border: 1px solid var(--border); border-radius: 999px;
+            padding: 5px 12px 5px 9px; width: fit-content;
+        }}
+        label[data-baseweb="checkbox"]:has(input:checked) {{ background: var(--accent-tint) !important; border-color: var(--accent); }}
         div[data-testid="stCheckbox"] label p {{ white-space: nowrap; font-size: 12.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; }}
-        /* The checkbox box is a <span> with NO role/aria-checked of its own
-           (those live on the sibling <input> that follows it in the DOM) --
-           found by inspecting the actual rendered markup, not assumed. */
-        label[data-baseweb="checkbox"] > span:first-child {{ background-color: var(--surface) !important; border-color: var(--border-strong) !important; }}
+        label[data-baseweb="checkbox"]:has(input:checked) p {{ color: var(--accent-bright); font-weight: 600; }}
+        label[data-baseweb="checkbox"] > span:first-child {{
+            background-color: var(--surface) !important; border-color: var(--border-strong) !important; width: 15px !important; height: 15px !important;
+        }}
         label[data-baseweb="checkbox"] > span:first-child:has(~ input:checked) {{ background-color: var(--accent) !important; border-color: var(--accent) !important; }}
         div[data-testid="stRadio"] label p {{ font-size: 13px; white-space: nowrap; }}
         label[data-baseweb="radio"] > div:first-child {{ background: var(--surface) !important; border-color: var(--border-strong) !important; }}
@@ -379,7 +465,7 @@ def inject_global_css() -> None:
             .block-container {{ max-width: 100%; padding-left: 1.2rem; padding-right: 1.2rem; }}
         }}
         @media (max-width: 900px) {{
-            .zf-header {{ padding: 0 12px; }}
+            .st-key-zf_header {{ padding: 14px 16px; }}
             .zf-tagline {{ display: none; }}
             .ticker-name, .ticker-price {{ font-size: 20px; }}
         }}

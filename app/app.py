@@ -112,9 +112,21 @@ LAYER_LABELS = {
 }
 
 NAV_ITEMS = [
-    ("screener", "🔍", "Screener"), ("analyze", "📈", "Analyze"),
-    ("topdown", "🧭", "Top-Down"), ("backtest", "📊", "Backtest"),
+    ("screener", "Screener"), ("analyze", "Analyze"),
+    ("topdown", "Top-Down"), ("backtest", "Backtest"),
 ]
+
+# Compact gradient "Z" wordmark: two horizontal price levels connected by a
+# diagonal structural break -- the same visual language as a BOS/CHoCH line
+# on the chart itself, deliberately (see theme.py's header CSS for the
+# gradient tokens this reuses).
+_LOGO_SVG = """<svg width="34" height="34" viewBox="0 0 34 34" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs><linearGradient id="zfLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+<stop offset="0%" stop-color="#60A5FA"/><stop offset="55%" stop-color="#3B82F6"/><stop offset="100%" stop-color="#2563EB"/>
+</linearGradient></defs>
+<rect width="34" height="34" rx="9" fill="url(#zfLogoGrad)"/>
+<path d="M10 12.5H24M24 12.5L10 21.5M10 21.5H24" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>"""
 
 # Headline numbers from the last full 49-ticker NIFTY 50 backtest
 # (scripts/basket_backtest.py) -- static, clearly labeled as such, not
@@ -189,7 +201,8 @@ def render_header() -> None:
 
         with c_logo:
             st.markdown(
-                f'<div class="zf-header-left"><span class="zf-logo">ZONIFY</span>'
+                f'<div class="zf-header-left">{_LOGO_SVG}'
+                f'<span class="zf-logo">ZONIFY</span>'
                 f'<span class="zf-tagline">{TAGLINE}</span></div>',
                 unsafe_allow_html=True,
             )
@@ -197,7 +210,7 @@ def render_header() -> None:
         with c_search:
             query = st.text_input(
                 "Search", key="global_search", label_visibility="collapsed",
-                placeholder="🔍  Search stocks, e.g. RELIANCE",
+                placeholder="Search stocks, e.g. RELIANCE",
             )
             last_query = st.session_state.get("_last_global_search", "")
             if query and query.strip() and query != last_query:
@@ -231,40 +244,43 @@ def render_nav() -> None:
     st.session_state.setdefault("page", "screener")
     with st.container(key="zf_nav"):
         nav_cols = st.columns([1, 1, 1, 1, 4.5], gap="small")
-        for col, (key, icon, label) in zip(nav_cols, NAV_ITEMS):
+        for col, (key, label) in zip(nav_cols, NAV_ITEMS):
             with col:
-                active = st.session_state["page"] == key
-                if st.button(f"{icon}  {label}", key=f"nav_{key}", use_container_width=True,
-                             type="primary" if active else "secondary"):
-                    st.session_state["page"] = key
-                    st.rerun()
+                # Each button gets its own keyed wrapper (-> a stable
+                # `.st-key-navicon_<key>` class) purely so theme.py's CSS
+                # can attach the right vector icon via mask-image -- no
+                # emoji in the label itself, see theme.py "NAV ICONS".
+                with st.container(key=f"navicon_{key}"):
+                    active = st.session_state["page"] == key
+                    if st.button(label, key=f"nav_{key}", use_container_width=True,
+                                 type="primary" if active else "secondary"):
+                        st.session_state["page"] = key
+                        st.rerun()
 
 
 def render_proof_strip() -> None:
-    cols = st.columns(3)
-    for col, sig in zip(cols[:2], PROVEN_SIGNALS):
-        with col:
-            st.markdown(
-                f"""
-                <div class="kpi-card">
-                    <div class="kpi-label">{sig['name']}</div>
-                    <div class="kpi-row"><span class="kpi-value accent">{sig['win_rate']:.1f}%</span><span class="kpi-sub">Win Rate</span></div>
-                    <div class="kpi-detail">+{sig['expectancy']:.2f}R expectancy · {sig['consistency']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-    with cols[2]:
-        st.markdown(
-            """
-            <div class="kpi-card">
-                <div class="kpi-label">BACKTEST COVERAGE</div>
-                <div class="kpi-row"><span class="kpi-value">NIFTY 50</span><span class="kpi-sub">49 symbols</span></div>
-                <div class="kpi-detail">~3,000 trades/signal · daily + 4H</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    # One markdown() call with a CSS grid, deliberately NOT st.columns():
+    # Streamlit's own per-column auto-height sizing for raw-HTML content
+    # measures each card BEFORE this file's injected CSS resizes it, then
+    # never re-measures -- confirmed directly (DevTools) as a consistent
+    # 16px shortfall that let the cards visually bleed into the nav row
+    # below. A single grid element sizes itself from its own real content,
+    # sidestepping that Streamlit column-height quirk entirely (the same
+    # fix already used for the market index strip above).
+    cards = [
+        f"""<div class="kpi-card">
+            <div class="kpi-label">{sig['name']}</div>
+            <div class="kpi-row"><span class="kpi-value accent">{sig['win_rate']:.1f}%</span><span class="kpi-sub">Win Rate</span></div>
+            <div class="kpi-detail">+{sig['expectancy']:.2f}R expectancy · {sig['consistency']}</div>
+        </div>"""
+        for sig in PROVEN_SIGNALS
+    ]
+    cards.append("""<div class="kpi-card">
+        <div class="kpi-label">BACKTEST COVERAGE</div>
+        <div class="kpi-row"><span class="kpi-value">NIFTY 50</span><span class="kpi-sub">49 symbols</span></div>
+        <div class="kpi-detail">~3,000 trades/signal · daily + 4H</div>
+    </div>""")
+    st.markdown(f'<div class="zf-proof-strip">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -561,20 +577,23 @@ def page_analyze() -> None:
     with tb3:
         st.button("Analyze", type="primary", use_container_width=True, key="analyze_go")
 
-    # --- Layer toggles: full names, two compact rows, never wrap mid-word ---
-    layer_row1 = st.columns(5)
-    layer_row2 = st.columns(5)
-    visible = {}
-    row1_items = ["Swings", "BOS", "CHoCH", "IDM", "FVG"]
-    row2_items = ["OrderBlock", "ExtremeOB", "MitigationBlock", "BreakerBlock"]
-    for col, cat in zip(layer_row1, row1_items):
-        with col:
-            visible[cat] = st.checkbox(LAYER_LABELS[cat], value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
-    for col, cat in zip(layer_row2, row2_items):
-        with col:
-            visible[cat] = st.checkbox(LAYER_LABELS[cat], value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
-    with layer_row2[4]:
-        show_liquidity = st.checkbox("Liquidity", value=False, key="layer_liquidity")
+    # --- Layer toggles, styled as chips (see theme.py) -- full names, two
+    # compact rows, never wrap mid-word ---
+    st.markdown('<div class="zf-chip-label">CHART LAYERS</div>', unsafe_allow_html=True)
+    with st.container(key="zf_layer_chips"):
+        layer_row1 = st.columns(5)
+        layer_row2 = st.columns(5)
+        visible = {}
+        row1_items = ["Swings", "BOS", "CHoCH", "IDM", "FVG"]
+        row2_items = ["OrderBlock", "ExtremeOB", "MitigationBlock", "BreakerBlock"]
+        for col, cat in zip(layer_row1, row1_items):
+            with col:
+                visible[cat] = st.checkbox(LAYER_LABELS[cat], value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
+        for col, cat in zip(layer_row2, row2_items):
+            with col:
+                visible[cat] = st.checkbox(LAYER_LABELS[cat], value=cat in DEFAULT_LAYERS_ON, key=f"layer_{cat}")
+        with layer_row2[4]:
+            show_liquidity = st.checkbox("Liquidity", value=False, key="layer_liquidity")
 
     if not ticker:
         return
